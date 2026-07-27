@@ -11,7 +11,7 @@
   <h1><a href="/">🍅 番茄小说工坊</a></h1>
   <nav>
     <a href="/project/{{ project_id }}">面板</a>
-    <a href="/project/{{ project_id }}/foundation">Foundation</a>
+    <a href="/project/{{ project_id }}/foundation">基础设定</a>
     <a href="/project/{{ project_id }}/chapters">章节</a>
     <a href="/project/{{ project_id }}/review" class="active">终审</a>
   </nav>
@@ -19,7 +19,7 @@
 
 <div class="container">
   <h2 style="font-weight: normal; font-size: 1.5rem; margin-bottom: 1rem;">{{ state.novel_title }} — 全局终审</h2>
-  <p class="muted mb-2">🍅 Phase 3：全局审查——爽点节奏、角色弧线完整度、章末钩子质量、算法适配评估、平台竞争力分析</p>
+  <p class="muted mb-2">🍅 第三阶段：全局审查——爽点节奏、角色弧线完整度、章末钩子质量、算法适配评估、平台竞争力分析</p>
   <div id="project-task-status" class="mb-2"></div>
 
   {% if not state.global_review_report or state.global_review_report.get('error') %}
@@ -162,7 +162,7 @@ async function monitorReviewTask(taskId) {
     renderProjectTaskStatus(banner, payload);
     if (payload.status === 'running') {
       status.innerHTML = '<p class="muted">全局终审运行中，当前节点：'
-        + (payload.current_node || 'global_review') + '</p>';
+        + (payload.current_node_label || '全局终审') + '</p>';
     }
   });
 

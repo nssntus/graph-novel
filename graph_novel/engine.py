@@ -31,10 +31,16 @@ Phase 3 (Final Pass):
 
 from __future__ import annotations
 
+import time
 from enum import Enum, auto
 from pathlib import Path
 from typing import Optional
 
+from graph_novel.exporting import (
+    approved_chapters,
+    build_novel_markdown,
+    export_filename,
+)
 from graph_novel.state import (
     GraphNovelState, NodeStatus, ApprovalStatus, Chapter,
 )
@@ -172,12 +178,27 @@ class GraphNovelEngine:
 
         # Node 1: World-Building
         self._execute_required_node("world_building", world_building.run_node)
+        self._record_route(
+            "world_building",
+            "character_design",
+            "world_ready",
+        )
 
         # Node 2: Character Design (can run after world-building)
         self._execute_required_node("character_design", character_design.run_node)
+        self._record_route(
+            "character_design",
+            "outline_planning",
+            "characters_ready",
+        )
 
         # Node 3: Outline Planning (needs world + characters)
         self._execute_required_node("outline_planning", outline_planning.run_node)
+        self._record_route(
+            "outline_planning",
+            "human_approval_foundation",
+            "foundation_gate",
+        )
 
         # Node 8 is now a persisted Gate. A separate decision resumes the graph.
         self.state.node_status["human_approval_foundation"] = NodeStatus.IN_PROGRESS
@@ -236,10 +257,20 @@ class GraphNovelEngine:
                         Chapter(chapter_number=ch_num, title=f"第{ch_num}章")
                     )
             self.state.log("Foundation approved — chapter pipeline is ready.")
+            self._record_route(
+                "human_approval_foundation",
+                "chapter_planning_1",
+                "approved",
+            )
         else:
             self.state.workflow_phase = "foundation"
             self.state.log(
                 "Foundation rejected — feedback saved for regeneration."
+            )
+            self._record_route(
+                "human_approval_foundation",
+                "world_building",
+                "rejected",
             )
 
         self.state.save()
@@ -282,13 +313,56 @@ class GraphNovelEngine:
         raise GraphExecutionError(node_key, message)
 
     def _execute_required_node(self, node_key: str, runner) -> None:
-        """Execute one required node and normalize unexpected exceptions."""
+        """Execute one required node and persist its lifecycle."""
+        started = time.perf_counter()
+        self.state.node_status[node_key] = NodeStatus.IN_PROGRESS
+        self.state.record_event(
+            "node_started",
+            node=node_key,
+            workflow_phase=self.state.workflow_phase,
+        )
+        self.state.save()
+
         try:
             self.state = runner(self.state)
         except Exception as exc:
             self.state.node_status[node_key] = NodeStatus.FAILED
             self.state.last_error = {"node": node_key, "message": str(exc)}
+
+        status = self.state.node_status.get(node_key)
+        completed = status == NodeStatus.COMPLETED
+        if not completed and status != NodeStatus.FAILED:
+            self.state.node_status[node_key] = NodeStatus.FAILED
+        event_details = {
+            "node": node_key,
+            "status": "completed" if completed else "failed",
+            "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+        }
+        if not completed:
+            event_details["error"] = self.state.last_error.get(
+                "message",
+                f"Required node {node_key} did not complete.",
+            )
+        self.state.record_event("node_finished", **event_details)
+        self.state.save()
         self._require_completed(node_key)
+
+    def _record_route(
+        self,
+        source: str,
+        target: str,
+        reason: str,
+        **details,
+    ) -> None:
+        """Persist one graph edge selection and its reason."""
+        self.state.record_event(
+            "route_selected",
+            source=source,
+            target=target,
+            reason=reason,
+            **details,
+        )
+        self.state.save()
 
     # ------------------------------------------------------------------
     # Phase 2: Chapter Pipeline
@@ -333,6 +407,11 @@ class GraphNovelEngine:
                 f"chapter_planning_{ch_num}",
                 chapter_planning.run_node,
             )
+            self._record_route(
+                f"chapter_planning_{ch_num}",
+                f"writing_{ch_num}",
+                "plan_ready",
+            )
 
             # Node 5: Chapter Writing
             self._execute_required_node(f"writing_{ch_num}", writing.run_node)
@@ -345,6 +424,12 @@ class GraphNovelEngine:
                     "message": message,
                 }
                 self._require_completed(f"writing_{ch_num}")
+
+            self._record_route(
+                f"writing_{ch_num}",
+                f"consistency_review_{ch_num}",
+                "draft_ready",
+            )
 
             # Node 6: Consistency Review
             self._execute_required_node(
@@ -369,12 +454,25 @@ class GraphNovelEngine:
                     self._format_review_feedback(review),
                     source="consistency_review",
                 )
+                self._record_route(
+                    f"consistency_review_{ch_num}",
+                    f"chapter_planning_{ch_num}",
+                    "review_failed",
+                    score=score,
+                    rewrite_attempt=rewrite_count,
+                )
                 continue
             else:
                 if rewrite_count > 0:
                     self.state.log(
                         f"Chapter {ch_num} rewrite complete after {rewrite_count} attempts."
                     )
+                self._record_route(
+                    f"consistency_review_{ch_num}",
+                    f"style_polish_{ch_num}",
+                    "review_passed",
+                    score=score,
+                )
                 break
 
         # Node 7: Style Polish
@@ -388,6 +486,11 @@ class GraphNovelEngine:
         chapter.approval = ApprovalStatus.PENDING
         self.state.node_status[f"human_approval_{ch_num}"] = NodeStatus.IN_PROGRESS
         self.state.pending_gate = f"chapter:{ch_num}"
+        self._record_route(
+            f"style_polish_{ch_num}",
+            f"human_approval_{ch_num}",
+            "chapter_gate",
+        )
         self.state.save()
         self.state.log(
             f"Chapter {ch_num} generated — awaiting human approval."
@@ -429,10 +532,21 @@ class GraphNovelEngine:
             self.state.workflow_phase = (
                 "global_review" if all_approved else "chapter_loop"
             )
+            next_target = (
+                "global_review"
+                if all_approved
+                else f"chapter_planning_{ch_num + 1}"
+            )
+            self._record_route(node_key, next_target, "approved")
             self.state.log(f"Chapter {ch_num} approved.")
             self._save_outputs()
         else:
             self.state.workflow_phase = "chapter_loop"
+            self._record_route(
+                node_key,
+                f"chapter_planning_{ch_num}",
+                "rejected",
+            )
             self.state.log(
                 f"Chapter {ch_num} rejected — feedback saved for rewrite."
             )
@@ -551,6 +665,7 @@ class GraphNovelEngine:
         self.state.log("PHASE 3: Global Review")
         self._execute_required_node("global_review", global_review.run_node)
         self.state.workflow_phase = "done"
+        self._record_route("global_review", "done", "review_completed")
 
     def validate_global_review(self) -> None:
         """Validate the Node 9 transition without mutating State."""
@@ -588,14 +703,15 @@ class GraphNovelEngine:
         out_dir = self._chapter_output_dir or (self.state.save_dir / "output")
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        for ch in self.state.chapters:
-            if ch.approval == ApprovalStatus.APPROVED and ch.polished_draft:
+        for ch in approved_chapters(self.state):
+            chapter_text = ch.polished_draft or ch.draft
+            if chapter_text:
                 shuangdian = getattr(ch, 'shuangdian_type', '') or ''
                 hook = getattr(ch, 'chapter_hook', '') or ''
                 review_score = ch.consistency_report.get('overall_score', 'N/A') if ch.consistency_report else 'N/A'
                 ch_path = out_dir / f"第{ch.chapter_number:02d}章.md"
                 content = f"# 第{ch.chapter_number}章：{ch.title}\n\n"
-                content += ch.polished_draft
+                content += chapter_text
                 content += f"\n\n---\n"
                 content += f"字数：{ch.word_count} | 审稿评分：{review_score}/10"
                 if shuangdian:
@@ -606,26 +722,9 @@ class GraphNovelEngine:
                 self.state.log(f"Chapter saved: {ch_path}")
 
         # Save complete novel
-        novel_path = out_dir / f"{self.state.novel_title.lower().replace(' ', '_')[:50]}_完整版.md"
-        novel_text = f"# {self.state.novel_title}\n\n"
-        if self.state.novel_outline:
-            novel_text += f"🍅 番茄小说 | *{self.state.novel_outline.genre}*\n\n"
-            novel_text += f"> {self.state.novel_outline.premise}\n\n"
-            novel_text += f"**主题：**{self.state.novel_outline.theme}\n\n"
-            # 爽点排期表
-            if self.state.novel_outline.shuangdian_map:
-                novel_text += "## 爽点排期表\n\n"
-                for item in self.state.novel_outline.shuangdian_map:
-                    novel_text += f"- {item.get('chapter_range', '')} | {item.get('type', '')} | {item.get('description', '')}\n"
-                novel_text += "\n---\n\n"
-
-        for ch in self.state.chapters:
-            if ch.approval == ApprovalStatus.APPROVED and ch.polished_draft:
-                shuangdian = getattr(ch, 'shuangdian_type', '')
-                hook = getattr(ch, 'chapter_hook', '')
-                novel_text += f"## 第{ch.chapter_number}章：{ch.title}\n\n"
-                novel_text += ch.polished_draft
-                novel_text += "\n\n"
-
-        novel_path.write_text(novel_text, encoding="utf-8")
+        novel_path = out_dir / export_filename(self.state)
+        novel_path.write_text(
+            build_novel_markdown(self.state),
+            encoding="utf-8",
+        )
         self.state.log(f"Complete novel saved: {novel_path}")

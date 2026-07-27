@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-CURRENT_STATE_VERSION = 4
+CURRENT_STATE_VERSION = 5
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -168,6 +168,7 @@ class GraphNovelState:
     pending_gate: Optional[str] = None
     last_error: Dict[str, Any] = field(default_factory=dict)
     active_task: Dict[str, Any] = field(default_factory=dict)
+    execution_events: List[Dict[str, Any]] = field(default_factory=list)
 
     # -- Phase 2: Chapter pipeline
     chapters: List[Chapter] = field(default_factory=list)
@@ -223,6 +224,16 @@ class GraphNovelState:
     def log(self, message: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         print(f"[GraphNovel {ts}] {message}")
+
+    def record_event(self, event: str, **details: Any) -> Dict[str, Any]:
+        """Append one durable graph execution event to the shared State."""
+        entry = {
+            "event": event,
+            "timestamp": datetime.now().isoformat(),
+            **details,
+        }
+        self.execution_events.append(entry)
+        return entry
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import os
 import json
 import threading
 import uuid
+from io import BytesIO
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -20,10 +21,15 @@ from typing import Any, Callable, Dict, List, Optional
 
 from flask import (
     Flask, render_template, request, jsonify, redirect, url_for,
-    session, flash,
+    session, flash, send_file,
 )
 from dotenv import load_dotenv
 
+from graph_novel.exporting import (
+    approved_chapters,
+    build_novel_markdown,
+    export_filename,
+)
 from graph_novel.state import (
     GraphNovelState, ApprovalStatus, NodeStatus
 )
@@ -43,6 +49,15 @@ _registry_lock = threading.Lock()
 _save_dir = Path(os.environ.get("GRAPH_NOVEL_DIR", str(Path.home() / "GraphNovel_Projects")))
 
 _save_dir.mkdir(parents=True, exist_ok=True)
+
+ARC_STAGE_LABELS = {
+    "inciting_incident": "诱发事件",
+    "rising_action": "发展上升",
+    "midpoint": "中点转折",
+    "dark_moment": "至暗时刻",
+    "climax": "高潮",
+    "resolution": "收束",
+}
 
 # ======================================================================
 # Routes
@@ -120,18 +135,15 @@ def project_dashboard(project_id: str):
     """Project dashboard."""
     state = _load_or_get_state(project_id)
     if not state:
-        flash("Project not found.", "error")
+        flash("项目不存在。", "error")
         return redirect(url_for("index"))
 
     return render_template(
         "dashboard.html",
         project_id=project_id,
         state=state,
-        approved_count=sum(
-            1
-            for chapter in state.chapters
-            if chapter.approval == ApprovalStatus.APPROVED
-        ),
+        approved_count=len(approved_chapters(state)),
+        arc_stage_labels=ARC_STAGE_LABELS,
     )
 
 
@@ -140,7 +152,7 @@ def foundation(project_id: str):
     """Foundation phase — world building, character design, outline planning."""
     state = _load_or_get_state(project_id)
     if not state:
-        flash("Project not found.", "error")
+        flash("项目不存在。", "error")
         return redirect(url_for("index"))
 
     return render_template(
@@ -155,7 +167,7 @@ def api_run_foundation(project_id: str):
     """Start Foundation nodes 1-3 in the background."""
     engine = _get_or_create_engine(project_id)
     if not engine:
-        return jsonify({"error": "Project not found"}), 404
+        return jsonify({"error": "项目不存在。"}), 404
 
     task, error = _start_project_task(
         project_id=project_id,
@@ -180,16 +192,16 @@ def api_approve_foundation(project_id: str):
     """Approve or reject the foundation."""
     engine = _get_or_create_engine(project_id)
     if not engine:
-        return jsonify({"error": "Project not found"}), 404
+        return jsonify({"error": "项目不存在。"}), 404
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not isinstance(data.get("approved"), bool):
-        return jsonify({"error": "approved must be a boolean"}), 400
+        return jsonify({"error": "approved 必须是布尔值。"}), 400
 
     approved = data["approved"]
     feedback = str(data.get("feedback", "")).strip()
     if not approved and not feedback:
-        return jsonify({"error": "驳回 Foundation 时请填写修改意见。"}), 400
+        return jsonify({"error": "驳回基础设定时请填写修改意见。"}), 400
 
     project_lock = _get_project_lock(project_id)
     if not project_lock.acquire(blocking=False):
@@ -226,18 +238,14 @@ def chapters_list(project_id: str):
     """Chapter list and management."""
     state = _load_or_get_state(project_id)
     if not state:
-        flash("Project not found.", "error")
+        flash("项目不存在。", "error")
         return redirect(url_for("index"))
 
     return render_template(
         "chapters.html",
         project_id=project_id,
         state=state,
-        approved_count=sum(
-            1
-            for chapter in state.chapters
-            if chapter.approval == ApprovalStatus.APPROVED
-        ),
+        approved_count=len(approved_chapters(state)),
     )
 
 
@@ -246,7 +254,7 @@ def api_run_chapter(project_id: str, ch_num: int):
     """Start chapter nodes 4-7 in the background."""
     engine = _get_or_create_engine(project_id)
     if not engine:
-        return jsonify({"error": "Project not found"}), 404
+        return jsonify({"error": "项目不存在。"}), 404
 
     task, error = _start_project_task(
         project_id=project_id,
@@ -272,11 +280,11 @@ def api_approve_chapter(project_id: str, ch_num: int):
     """Approve or reject a chapter."""
     engine = _get_or_create_engine(project_id)
     if not engine:
-        return jsonify({"error": "Project not found"}), 404
+        return jsonify({"error": "项目不存在。"}), 404
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or not isinstance(data.get("approved"), bool):
-        return jsonify({"error": "approved must be a boolean"}), 400
+        return jsonify({"error": "approved 必须是布尔值。"}), 400
 
     approved = data["approved"]
     feedback = str(data.get("feedback", "")).strip()
@@ -323,7 +331,7 @@ def api_run_global_review(project_id: str):
     """Start Node 9 in the background."""
     engine = _get_or_create_engine(project_id)
     if not engine:
-        return jsonify({"error": "Project not found"}), 404
+        return jsonify({"error": "项目不存在。"}), 404
 
     task, error = _start_project_task(
         project_id=project_id,
@@ -348,7 +356,7 @@ def global_review_page(project_id: str):
     """Global review dashboard."""
     state = _load_or_get_state(project_id)
     if not state:
-        flash("Project not found.", "error")
+        flash("项目不存在。", "error")
         return redirect(url_for("index"))
 
     return render_template(
@@ -363,8 +371,8 @@ def api_task_status(project_id: str):
     """Return the persisted execution status for one project."""
     state = _load_or_get_state(project_id)
     if not state:
-        return jsonify({"error": "Project not found"}), 404
-    return jsonify(_task_status_payload(state))
+        return jsonify({"error": "项目不存在。"}), 404
+    return jsonify(_task_status_payload(state, project_id))
 
 
 @app.route("/api/<project_id>/state", methods=["GET"])
@@ -372,17 +380,19 @@ def api_get_state(project_id: str):
     """Get the current state as JSON."""
     state = _load_or_get_state(project_id)
     if not state:
-        return jsonify({"error": "Project not found"}), 404
+        return jsonify({"error": "项目不存在。"}), 404
 
     return jsonify({
         "title": state.novel_title,
         "workflow_phase": state.workflow_phase,
         "pending_gate": state.pending_gate,
-        "task_status": _task_status_payload(state)["status"],
+        "task_status": _task_status_payload(state, project_id)["status"],
         "active_task": state.active_task,
+        "execution_events": state.execution_events[-100:],
         "foundation_approval": state.foundation_approval.value,
         "current_chapter": state.current_chapter,
         "total_chapters": state.total_chapters,
+        "approved_chapters": len(approved_chapters(state)),
         "node_status": {k: v.value for k, v in state.node_status.items()},
         "chapters": [
             {
@@ -404,7 +414,7 @@ def api_get_chapter(project_id: str, ch_num: int):
     """Get a specific chapter's content."""
     state = _load_or_get_state(project_id)
     if not state or ch_num > len(state.chapters):
-        return jsonify({"error": "Chapter not found"}), 404
+        return jsonify({"error": "章节不存在。"}), 404
 
     ch = state.chapters[ch_num - 1]
     return jsonify({
@@ -426,7 +436,7 @@ def download_state(project_id: str):
     """Download the full state JSON."""
     state = _load_or_get_state(project_id)
     if not state:
-        return "Not found", 404
+        return "项目不存在。", 404
     return app.response_class(
         state.to_json(),
         mimetype="application/json",
@@ -458,7 +468,7 @@ def api_chat(project_id: str):
     chat_history = data.get("history", [])  # [{role, content}]
 
     if not user_message:
-        return jsonify({"error": "Empty message"}), 400
+        return jsonify({"error": "消息不能为空。"}), 400
 
     # Load project state if available, otherwise creative-only mode
     state = None
@@ -505,7 +515,7 @@ def api_chat(project_id: str):
 
     # Chapter progress
     if state and state.chapters:
-        written = [ch for ch in state.chapters if ch.polished_draft]
+        written = approved_chapters(state)
         context_blocks.append(f"章节进度：{len(written)}/{state.total_chapters}章已完成")
         # Latest chapter summary
         if written:
@@ -565,27 +575,13 @@ def download_novel(project_id: str):
     """Download the complete novel as markdown."""
     state = _load_or_get_state(project_id)
     if not state:
-        return "Not found", 404
+        return "项目不存在。", 404
 
-    novel_text = f"# {state.novel_title}\n\n"
-    if state.novel_outline:
-        novel_text += f"*{state.novel_outline.genre}*\n\n"
-        novel_text += f"> {state.novel_outline.premise}\n\n"
-        novel_text += f"**Theme:** {state.novel_outline.theme}\n\n---\n\n"
-
-    for ch in state.chapters:
-        if (
-            ch.approval == ApprovalStatus.APPROVED
-            and (ch.polished_draft or ch.draft)
-        ):
-            novel_text += f"## Chapter {ch.chapter_number}: {ch.title}\n\n"
-            novel_text += (ch.polished_draft or ch.draft)
-            novel_text += "\n\n"
-
-    return app.response_class(
-        novel_text,
-        mimetype="text/markdown",
-        headers={"Content-Disposition": f"attachment; filename={project_id}_novel.md"},
+    return send_file(
+        BytesIO(build_novel_markdown(state).encode("utf-8")),
+        mimetype="text/markdown; charset=utf-8",
+        as_attachment=True,
+        download_name=export_filename(state),
     )
 
 
@@ -790,10 +786,19 @@ def _graph_error_payload(exc: GraphExecutionError) -> Dict[str, Any]:
     }
 
 
-def _task_status_payload(state: GraphNovelState) -> Dict[str, Any]:
+def _task_status_payload(
+    state: GraphNovelState,
+    project_id: str = "",
+) -> Dict[str, Any]:
     task = dict(state.active_task)
     task_status = task.get("status")
-    if task_status == "running":
+    finalizing = False
+    if project_id:
+        with _registry_lock:
+            project_lock = _project_locks.get(project_id)
+        finalizing = bool(project_lock and project_lock.locked())
+
+    if task_status == "running" or finalizing:
         status = "running"
     elif state.pending_gate:
         status = "awaiting_approval"
@@ -823,9 +828,48 @@ def _task_status_payload(state: GraphNovelState) -> Dict[str, Any]:
         "task": task,
         "workflow_phase": state.workflow_phase,
         "pending_gate": state.pending_gate,
+        "pending_gate_label": _gate_label(state.pending_gate or ""),
         "current_node": current_node,
+        "current_node_label": _node_label(current_node),
         "last_error": state.last_error,
     }
+
+
+def _node_label(node_key: str) -> str:
+    """Translate persisted graph keys into stable user-facing labels."""
+    fixed = {
+        "": "",
+        "foundation": "基础设定生成",
+        "chapter": "章节生成",
+        "world_building": "世界观构建",
+        "character_design": "人物设计",
+        "outline_planning": "大纲规划",
+        "human_approval_foundation": "基础设定审批",
+        "global_review": "全局终审",
+        "done": "已完成",
+    }
+    if node_key in fixed:
+        return fixed[node_key]
+    dynamic = (
+        ("chapter_planning_", "章节规划"),
+        ("writing_", "章节写作"),
+        ("consistency_review_", "一致性审查"),
+        ("style_polish_", "风格润色"),
+        ("human_approval_", "章节审批"),
+    )
+    for prefix, label in dynamic:
+        if node_key.startswith(prefix):
+            number = node_key[len(prefix):]
+            return f"第{number}章·{label}"
+    return node_key
+
+
+def _gate_label(gate_key: str) -> str:
+    if gate_key == "foundation":
+        return "基础设定审批"
+    if gate_key.startswith("chapter:"):
+        return f"第{gate_key.split(':', 1)[1]}章审批"
+    return gate_key
 
 
 def _recover_interrupted_task(state: GraphNovelState) -> None:
@@ -920,7 +964,14 @@ def _list_projects() -> List[dict]:
                     completed_chapters = sum(
                         1
                         for chapter in data.get("chapters", [])
-                        if chapter.get("approval") == ApprovalStatus.APPROVED.value
+                        if (
+                            chapter.get("approval")
+                            == ApprovalStatus.APPROVED.value
+                            and (
+                                chapter.get("polished_draft")
+                                or chapter.get("draft")
+                            )
+                        )
                     )
                     projects.append({
                         "id": project_dir.name,

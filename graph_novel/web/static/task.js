@@ -51,15 +51,17 @@
     if (!element || !payload) return;
 
     if (payload.status === "running") {
-      const node = escapeHtml(payload.current_node || payload.task.kind);
+      const node = escapeHtml(
+        payload.current_node_label || payload.current_node || payload.task.kind
+      );
       element.innerHTML =
         '<p class="muted"><span class="spinner"></span> 当前节点：'
         + node + "</p>";
     } else if (payload.status === "awaiting_approval") {
       element.innerHTML =
         '<p class="alert alert-success">生成完成，图已在 '
-        + escapeHtml(payload.pending_gate)
-        + " Gate 暂停，等待审批。</p>";
+        + escapeHtml(payload.pending_gate_label || payload.pending_gate)
+        + "暂停，等待审批。</p>";
     } else if (payload.status === "failed") {
       const message = payload.last_error && payload.last_error.message
         ? payload.last_error.message

@@ -4,11 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import os
+import re
+import threading
+import uuid
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
+
+_DEBUG_WRITE_LOCK = threading.Lock()
+_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]+\b", re.IGNORECASE),
+    re.compile(
+        r"(?i)((?:api[_ -]?key|authorization|bearer)\s*[:=]?\s*)"
+        r"[^\s,;\"']+"
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -20,6 +35,8 @@ class LLMSettings:
     format_retries: int
     thinking: str
     reasoning_effort: str
+    debug_file: Optional[Path]
+    debug_max_chars: int
 
 
 def get_llm_settings() -> LLMSettings:
@@ -66,6 +83,16 @@ def get_llm_settings() -> LLMSettings:
     model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-pro").strip()
     if not model:
         raise RuntimeError("DEEPSEEK_MODEL cannot be empty")
+    debug_file_value = os.environ.get(
+        "GRAPH_NOVEL_LLM_DEBUG_FILE",
+        "",
+    ).strip()
+    debug_max_chars = _read_int_env(
+        "GRAPH_NOVEL_LLM_DEBUG_MAX_CHARS",
+        default=2000,
+        minimum=100,
+        maximum=20000,
+    )
     return LLMSettings(
         base_url=base_url,
         model=model,
@@ -74,6 +101,8 @@ def get_llm_settings() -> LLMSettings:
         format_retries=format_retries,
         thinking=thinking,
         reasoning_effort=reasoning_effort,
+        debug_file=Path(debug_file_value) if debug_file_value else None,
+        debug_max_chars=debug_max_chars,
     )
 
 
@@ -152,12 +181,44 @@ async def call_llm_messages(
     if response_format is not None:
         request["response_format"] = response_format
 
-    resp = await asyncio.to_thread(
-        lambda: client.chat.completions.create(**request)
+    request_id = uuid.uuid4().hex
+    _write_debug_event(
+        settings,
+        {
+            "event": "request",
+            "request_id": request_id,
+            "model": request["model"],
+            "thinking": thinking_mode,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        },
     )
+    try:
+        resp = await asyncio.to_thread(
+            lambda: client.chat.completions.create(**request)
+        )
+    except Exception as exc:
+        _write_debug_event(
+            settings,
+            {
+                "event": "error",
+                "request_id": request_id,
+                "error": str(exc),
+            },
+        )
+        raise
 
     content = resp.choices[0].message.content
-    return content.strip() if content else ""
+    result = content.strip() if content else ""
+    _write_debug_event(
+        settings,
+        {
+            "event": "response",
+            "request_id": request_id,
+            "content": result,
+        },
+    )
+    return result
 
 
 def call_llm_sync(
@@ -248,4 +309,52 @@ def _read_float_env(
         raise RuntimeError(f"{name} must be a number") from exc
     if not minimum <= value <= maximum:
         raise RuntimeError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _write_debug_event(
+    settings: LLMSettings,
+    payload: Dict[str, Any],
+) -> None:
+    """Append one best-effort JSONL event when debug logging is enabled."""
+    if settings.debug_file is None:
+        return
+
+    event = {
+        "timestamp": datetime.now().isoformat(),
+        **_sanitize_debug_value(payload, settings.debug_max_chars),
+    }
+    try:
+        settings.debug_file.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(event, ensure_ascii=False, default=str)
+        with _DEBUG_WRITE_LOCK:
+            with settings.debug_file.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+    except OSError:
+        # Diagnostics must never change the provider call's behavior.
+        return
+
+
+def _sanitize_debug_value(value: Any, max_chars: int) -> Any:
+    if isinstance(value, str):
+        redacted = value
+        for pattern in _SECRET_PATTERNS:
+            if pattern.groups:
+                redacted = pattern.sub(r"\1[REDACTED]", redacted)
+            else:
+                redacted = pattern.sub("[REDACTED]", redacted)
+        if len(redacted) > max_chars:
+            return redacted[:max_chars] + "…[TRUNCATED]"
+        return redacted
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_debug_value(item, max_chars)
+            for key, item in value.items()
+            if str(key).lower() not in {"api_key", "authorization"}
+        }
+    if isinstance(value, list):
+        return [
+            _sanitize_debug_value(item, max_chars)
+            for item in value
+        ]
     return value

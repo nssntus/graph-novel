@@ -11,7 +11,7 @@
   <h1><a href="/">🍅 番茄小说工坊</a></h1>
   <nav>
     <a href="/project/{{ project_id }}" class="active">面板</a>
-    <a href="/project/{{ project_id }}/foundation">Foundation</a>
+    <a href="/project/{{ project_id }}/foundation">基础设定</a>
     <a href="/project/{{ project_id }}/chapters">章节</a>
     <a href="/project/{{ project_id }}/review">终审</a>
   </nav>
@@ -86,7 +86,7 @@
       <div><span class="badge {{ 'badge-completed' if ns.get('world_building', '').value == 'completed' else 'badge-pending' }}">世界观构建</span></div>
       <div><span class="badge {{ 'badge-completed' if ns.get('character_design', '').value == 'completed' else 'badge-pending' }}">人物设计</span></div>
       <div><span class="badge {{ 'badge-completed' if ns.get('outline_planning', '').value == 'completed' else 'badge-pending' }}">大纲规划</span></div>
-      <div><span class="badge {{ 'badge-completed' if ns.get('human_approval_foundation', '').value == 'completed' else 'badge-pending' }}">Foundation审批</span></div>
+      <div><span class="badge {{ 'badge-completed' if ns.get('human_approval_foundation', '').value == 'completed' else 'badge-pending' }}">基础设定审批</span></div>
       <div><span class="badge {{ 'badge-completed' if ns.get('global_review', '').value == 'completed' else 'badge-pending' }}">全局终审</span></div>
     </div>
   </div>
@@ -99,7 +99,7 @@
       {% for name, arc in state.character_arc_tracker.items() %}
       <div class="flex justify-between items-center mt-1">
         <span>{{ name }}</span>
-        <span class="badge badge-in-progress">{{ arc.current_stage.value }}</span>
+        <span class="badge badge-in-progress">{{ arc_stage_labels.get(arc.current_stage.value, arc.current_stage.value) }}</span>
       </div>
       {% endfor %}
       {% else %}
@@ -123,7 +123,7 @@
 
   <!-- Actions -->
   <div class="flex gap-1 mt-2">
-    <a href="/project/{{ project_id }}/foundation" class="btn">Foundation</a>
+    <a href="/project/{{ project_id }}/foundation" class="btn">基础设定</a>
     <a href="/project/{{ project_id }}/chapters" class="btn btn-primary">写章节</a>
     {% if written == state.total_chapters and state.total_chapters > 0 %}
     <a href="/project/{{ project_id }}/review" class="btn">全局终审</a>

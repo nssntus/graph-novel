@@ -20,6 +20,7 @@ load_dotenv()
 
 from graph_novel.state import GraphNovelState
 from graph_novel.engine import GraphNovelEngine
+from graph_novel.exporting import approved_chapters
 
 
 def main():
@@ -41,7 +42,7 @@ def main():
     args = parser.parse_args()
 
     if not os.environ.get("DEEPSEEK_API_KEY"):
-        print("Error: DEEPSEEK_API_KEY not set. Export it or create a .env file.")
+        print("错误：未设置 DEEPSEEK_API_KEY，请通过环境变量或 .env 提供。")
         sys.exit(1)
 
     # Create state
@@ -83,7 +84,10 @@ def main():
     print(f"\n{'='*60}")
     print("GraphNovel run complete!")
     print(f"State saved to: {save_dir}")
-    print(f"Chapters written: {len([c for c in result.chapters if c.polished_draft])}/{args.chapters}")
+    print(
+        f"Chapters approved: "
+        f"{len(approved_chapters(result))}/{args.chapters}"
+    )
     if result.global_review_report:
         score = result.global_review_report.get("overall_score", "?")
         print(f"Global review score: {score}/10")

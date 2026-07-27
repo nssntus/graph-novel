@@ -834,6 +834,7 @@ def test_llm_provider_configuration():
     import asyncio
     from graph_novel import llm
 
+    debug_path = Path(tempfile.mkdtemp()) / "llm-debug.jsonl"
     with mock.patch.dict(
         os.environ,
         {
@@ -844,6 +845,8 @@ def test_llm_provider_configuration():
             "DEEPSEEK_API_RETRIES": "1",
             "DEEPSEEK_FORMAT_RETRIES": "1",
             "DEEPSEEK_THINKING": "disabled",
+            "GRAPH_NOVEL_LLM_DEBUG_FILE": str(debug_path),
+            "GRAPH_NOVEL_LLM_DEBUG_MAX_CHARS": "200",
         },
     ), mock.patch("graph_novel.llm.OpenAI") as openai_cls:
         client = mock.Mock()
@@ -861,7 +864,7 @@ def test_llm_provider_configuration():
 
         result = asyncio.run(llm.call_llm(
             "请输出 JSON。",
-            "测试",
+            "测试，请勿记录 sk-sensitive-debug-secret",
             response_format={"type": "json_object"},
         ))
         assert result == '{"ok": true}'
@@ -885,6 +888,172 @@ def test_llm_provider_configuration():
         assert thinking_request["extra_body"] == {
             "thinking": {"type": "enabled"},
         }
+
+        debug_entries = [
+            json.loads(line)
+            for line in debug_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert [entry["event"] for entry in debug_entries] == [
+            "request",
+            "response",
+            "request",
+            "response",
+        ]
+        debug_text = debug_path.read_text(encoding="utf-8")
+        assert "test-key" not in debug_text
+        assert "sk-sensitive-debug-secret" not in debug_text
+        assert "[REDACTED]" in debug_text
+    print("✓ PASSED")
+
+
+def test_execution_trace_and_unified_export():
+    """Node timing, route choices, and approved-only exports are persistent."""
+    print("  Testing execution trace + unified export...", end=" ")
+    from graph_novel.exporting import (
+        approved_chapters,
+        build_novel_markdown,
+        export_filename,
+    )
+
+    state = make_sample_state()
+    state.project_id = "trace_export"
+    state.save_dir = Path(tempfile.mkdtemp())
+    state.foundation_approval = ApprovalStatus.APPROVED
+    state.workflow_phase = "chapter_loop"
+    engine = GraphNovelEngine(state)
+    plan, write, review, polish = _chapter_pipeline_mocks()
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=plan,
+    ), mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=write,
+    ), mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=review,
+    ), mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=polish,
+    ):
+        engine.run_chapter_generation(1)
+
+    node_finished = [
+        event
+        for event in state.execution_events
+        if event["event"] == "node_finished"
+    ]
+    assert [event["node"] for event in node_finished] == [
+        "chapter_planning_1",
+        "writing_1",
+        "consistency_review_1",
+        "style_polish_1",
+    ]
+    assert all(event["status"] == "completed" for event in node_finished)
+    assert all(event["duration_ms"] >= 0 for event in node_finished)
+    assert any(
+        event["event"] == "route_selected"
+        and event["source"] == "consistency_review_1"
+        and event["target"] == "style_polish_1"
+        and event["reason"] == "review_passed"
+        for event in state.execution_events
+    )
+    assert any(
+        event["event"] == "route_selected"
+        and event["target"] == "human_approval_1"
+        and event["reason"] == "chapter_gate"
+        for event in state.execution_events
+    )
+
+    engine.apply_chapter_decision(1, True, "")
+    state.chapters[1].polished_draft = "未批准内容不得导出"
+    state.chapters[1].word_count = 9
+    exported = approved_chapters(state)
+    assert [chapter.chapter_number for chapter in exported] == [1]
+    markdown = build_novel_markdown(state)
+    assert "已批准章节：1/3" in markdown
+    assert f"总字数：{state.chapters[0].word_count}" in markdown
+    assert "## 第1章：" in markdown
+    assert "未批准内容不得导出" not in markdown
+    assert "**Theme:**" not in markdown
+    assert export_filename(state) == "trace_export_完整版.md"
+
+    reloaded = GraphNovelState.from_json(state.save())
+    assert reloaded.version == 5
+    assert reloaded.execution_events == state.execution_events
+    print("✓ PASSED")
+
+
+def test_web_observability_and_export_contract():
+    """Web surfaces graph labels, recent events, and the canonical export."""
+    print("  Testing Web observability + export contract...", end=" ")
+    from graph_novel.web.app import app as flask_app, _engines, _states
+
+    project_id = "web_observability"
+    state = make_sample_state()
+    state.project_id = project_id
+    state.novel_title = "可观测性测试"
+    state.save_dir = TEST_PROJECTS_DIR / project_id
+    state.foundation_approval = ApprovalStatus.APPROVED
+    state.chapters[0].draft = "仅批准正文"
+    state.chapters[0].word_count = 6
+    state.chapters[0].approval = ApprovalStatus.APPROVED
+    state.chapters[1].polished_draft = "未批准正文"
+    state.chapters[1].word_count = 6
+    state.node_status["writing_2"] = NodeStatus.IN_PROGRESS
+    state.active_task = {
+        "id": "observable-task",
+        "kind": "chapter",
+        "chapter": 2,
+        "status": "running",
+    }
+    state.record_event(
+        "route_selected",
+        source="chapter_planning_2",
+        target="writing_2",
+        reason="plan_ready",
+    )
+    state.save()
+    _states[project_id] = state
+    _engines.pop(project_id, None)
+
+    with flask_app.test_client() as client:
+        task = client.get(
+            f"/api/{project_id}/task-status"
+        ).get_json()
+        assert task["current_node"] == "writing_2"
+        assert task["current_node_label"] == "第2章·章节写作"
+
+        state_payload = client.get(f"/api/{project_id}/state").get_json()
+        assert state_payload["approved_chapters"] == 1
+        assert state_payload["execution_events"][-1]["reason"] == "plan_ready"
+
+        dashboard = client.get(
+            f"/project/{project_id}"
+        ).get_data(as_text=True)
+        assert "基础设定" in dashboard
+        assert "诱发事件" in dashboard
+
+        foundation_page = client.get(
+            f"/project/{project_id}/foundation"
+        ).get_data(as_text=True)
+        assert "AI 智能体" in foundation_page
+        assert "关键场景" in foundation_page
+        assert "查看章节大纲" in foundation_page
+        assert "Key Locations" not in foundation_page
+        assert "View Chapter Outlines" not in foundation_page
+
+        response = client.get(f"/download/{project_id}/novel")
+        markdown = response.get_data(as_text=True)
+        assert response.status_code == 200
+        assert "已批准章节：1/3" in markdown
+        assert "## 第1章：" in markdown
+        assert "仅批准正文" in markdown
+        assert "未批准正文" not in markdown
+        assert "## Chapter 1:" not in markdown
+        disposition = response.headers["Content-Disposition"]
+        assert project_id in disposition
+        assert ".md" in disposition
     print("✓ PASSED")
 
 
@@ -1081,7 +1250,7 @@ def test_project_inputs_and_legacy_state_migration():
         "project_id", "creative_genre", "creative_premise", "creative_theme",
         "target_total_chapters", "workflow_phase", "pending_gate",
         "foundation_approval", "foundation_feedback", "last_error",
-        "active_task",
+        "active_task", "execution_events",
     ):
         legacy_data.pop(key, None)
     legacy_data["version"] = 1
@@ -1089,7 +1258,7 @@ def test_project_inputs_and_legacy_state_migration():
     legacy_path.write_text(json.dumps(legacy_data, ensure_ascii=False), encoding="utf-8")
 
     loaded = GraphNovelState.from_json(legacy_path)
-    assert loaded.version == 4
+    assert loaded.version == 5
     assert loaded.target_total_chapters == loaded.total_chapters
     assert loaded.foundation_approval == ApprovalStatus.APPROVED
     assert loaded.workflow_phase == "chapter_loop"
@@ -1106,7 +1275,7 @@ def test_project_inputs_and_legacy_state_migration():
     )
 
     migrated = GraphNovelState.from_json(version_two_path)
-    assert migrated.version == 4
+    assert migrated.version == 5
     assert migrated.chapters[0].side_effects_committed
     assert migrated.pending_gate == "chapter:2"
     print("✓ PASSED")
@@ -1399,6 +1568,155 @@ def test_chapter_web_api_contract():
     print("✓ PASSED")
 
 
+def test_complete_mock_web_workflow():
+    """Create → both Gate types → five chapters → final review → export."""
+    print("  Testing complete Mock Web workflow...", end=" ")
+    from graph_novel.web.app import app as flask_app, _states
+
+    project_id = "web_e2e_mock"
+    world, characters, outline = _foundation_llm_mocks(chapter_count=5)
+    _, write, review, polish = _chapter_pipeline_mocks()
+
+    def plan_for_prompt(_system_prompt, user_prompt, **_kwargs):
+        marker = user_prompt.split("规划第", 1)[1].split("章", 1)[0]
+        chapter_number = int(marker)
+        return json.dumps({
+            "chapter_number": chapter_number,
+            "title": f"测试章节{chapter_number}",
+            "scene_plan": [],
+            "pov_character": "林凡",
+            "opening_hook": "危机突然出现",
+            "closing_hook": "新的真相浮现",
+            "dialogue_highlights": [],
+            "shuangdian_beat": "小爽点",
+            "continuity_notes": {},
+            "ai_taboos_check": [],
+        }, ensure_ascii=False)
+
+    with flask_app.test_client() as client, \
+         mock.patch(
+             "graph_novel.nodes.world_building.call_llm_sync",
+             return_value=world,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.character_design.call_llm_sync",
+             return_value=characters,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.outline_planning.call_llm_sync",
+             return_value=outline,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.chapter_planning.call_llm_sync",
+             side_effect=plan_for_prompt,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.writing.call_llm_sync",
+             return_value=write,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.consistency_review.call_llm_sync",
+             return_value=review,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.style_polish.call_llm_sync",
+             return_value=polish,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.global_review.call_llm_sync",
+             return_value=json.dumps(MOCK_GLOBAL_REVIEW),
+         ):
+        created = client.post("/create", data={
+            "title": "Web E2E Mock",
+            "genre": "都市脑洞",
+            "genre_tags": "重生,信息差",
+            "premise": "重生后靠信息差逆袭",
+            "theme": "逆袭与责任",
+            "target_chapters": "5",
+            "target_words": "50000",
+            "notes": "全流程 Mock 验证。",
+        })
+        assert created.status_code == 302
+        assert created.headers["Location"].endswith(
+            f"/project/{project_id}/foundation"
+        )
+
+        response = client.post(f"/api/{project_id}/run-foundation")
+        assert response.status_code == 202
+        foundation_task = wait_for_task_status(
+            client,
+            project_id,
+            "awaiting_approval",
+        )
+        assert foundation_task["pending_gate_label"] == "基础设定审批"
+        approved = client.post(
+            f"/api/{project_id}/approve-foundation",
+            json={"approved": True, "feedback": ""},
+        )
+        assert approved.status_code == 200
+
+        for chapter_number in range(1, 6):
+            response = client.post(
+                f"/api/{project_id}/run-chapter/{chapter_number}"
+            )
+            assert response.status_code == 202
+            chapter_task = wait_for_task_status(
+                client,
+                project_id,
+                "awaiting_approval",
+            )
+            assert chapter_task["pending_gate_label"] == (
+                f"第{chapter_number}章审批"
+            )
+            decision = client.post(
+                f"/api/{project_id}/approve-chapter/{chapter_number}",
+                json={"approved": True, "feedback": ""},
+            )
+            assert decision.status_code == 200
+
+        state = _states[project_id]
+        assert state.workflow_phase == "global_review"
+        assert all(
+            chapter.approval == ApprovalStatus.APPROVED
+            for chapter in state.chapters
+        )
+
+        response = client.post(f"/api/{project_id}/run-global-review")
+        assert response.status_code == 202
+        final_task = wait_for_task_status(
+            client,
+            project_id,
+            "completed",
+        )
+        assert final_task["workflow_phase"] == "done"
+        assert state.global_review_report["overall_score"] == 8
+
+        state_payload = client.get(
+            f"/api/{project_id}/state"
+        ).get_json()
+        assert state_payload["approved_chapters"] == 5
+        assert any(
+            event["event"] == "route_selected"
+            and event["source"] == "global_review"
+            and event["target"] == "done"
+            for event in state_payload["execution_events"]
+        )
+
+        download = client.get(f"/download/{project_id}/novel")
+        markdown = download.get_data(as_text=True)
+        assert download.status_code == 200
+        assert "已批准章节：5/5" in markdown
+        assert markdown.count("## 第") == 5
+        assert "未批准" not in markdown
+
+        review_page = client.get(
+            f"/project/{project_id}/review"
+        ).get_data(as_text=True)
+        assert "8/10" in review_page
+        assert "第三阶段" in review_page
+    print("✓ PASSED")
+
+
 def test_web_task_lock_and_restart_recovery():
     """One project runs one task; orphaned running tasks recover safely."""
     print("  Testing Web task lock + restart recovery...", end=" ")
@@ -1516,6 +1834,8 @@ def run_all_tests():
         test_graph_engine_routing,
         test_output_contract_parsing_and_retry,
         test_llm_provider_configuration,
+        test_execution_trace_and_unified_export,
+        test_web_observability_and_export_contract,
         test_node_contract_failures_are_observable,
         test_chapter_pipeline_with_mocks,
         test_consistency_rewrite_loop,
@@ -1531,6 +1851,7 @@ def run_all_tests():
         test_chapter_gate_feedback_and_side_effect_commit,
         test_chapter_failure_stops_before_gate,
         test_chapter_web_api_contract,
+        test_complete_mock_web_workflow,
         test_web_task_lock_and_restart_recovery,
     ]
 

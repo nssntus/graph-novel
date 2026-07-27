@@ -11,7 +11,7 @@
   <h1><a href="/">🍅 番茄小说工坊</a></h1>
   <nav>
     <a href="/project/{{ project_id }}">面板</a>
-    <a href="/project/{{ project_id }}/foundation">Foundation</a>
+    <a href="/project/{{ project_id }}/foundation">基础设定</a>
     <a href="/project/{{ project_id }}/chapters" class="active">章节</a>
     <a href="/project/{{ project_id }}/review">终审</a>
   </nav>
@@ -91,7 +91,7 @@
   <!-- Run Next Remaining -->
   <div class="card text-center mt-2" style="padding: 2rem;" id="run-all-section">
     <h3>生成下一待写章节</h3>
-    <p class="muted mb-2">运行一章完整管线（规划→写作→毒舌审稿→润色），到人工审批 Gate 后暂停。</p>
+    <p class="muted mb-2">运行一章完整管线（规划→写作→毒舌审稿→润色），到人工审批点后暂停。</p>
     <button class="btn btn-primary" onclick="runAllChapters()" id="run-all-btn">
       生成下一章
     </button>
@@ -153,7 +153,7 @@ async function monitorChapterTask(taskId, chNum) {
     renderProjectTaskStatus(banner, payload);
     if (status && payload.status === 'running') {
       status.innerHTML = '<p class="muted">当前节点：'
-        + (payload.current_node || '初始化') + '</p>';
+        + (payload.current_node_label || '初始化') + '</p>';
     }
   });
 
