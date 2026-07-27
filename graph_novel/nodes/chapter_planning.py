@@ -4,10 +4,13 @@ Node 4: 章节规划 Agent
 """
 
 import json
-import re
 
 from graph_novel.state import GraphNovelState, NodeStatus, Chapter, ChapterOutline
 from graph_novel.llm import call_llm_sync
+from graph_novel.output_contracts import (
+    call_json_with_contract_sync,
+    chapter_plan_contract,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的章节规划师。在每章写作前，你制定详细的叙事计划。
 
@@ -80,11 +83,14 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 生成详细的章节规划 JSON。"""
 
     try:
-        raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=0.7)
-        json_text = _extract_json(raw)
-        data = json.loads(json_text)
-        if not isinstance(data, dict):
-            raise ValueError("章节规划响应必须是 JSON 对象")
+        data = call_json_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            contract=chapter_plan_contract(ch_num),
+            max_tokens=4096,
+            temperature=0.7,
+        )
 
         while len(state.chapters) < ch_num:
             state.chapters.append(Chapter(chapter_number=len(state.chapters) + 1, title=""))
@@ -141,13 +147,3 @@ def _serialize_outline(outline: ChapterOutline) -> dict:
         "foreshadowing_to_plant": outline.foreshadowing_to_plant,
         "foreshadowing_to_pay_off": outline.foreshadowing_to_pay_off,
     }
-
-
-def _extract_json(text: str) -> str:
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-    if match:
-        return match.group(1)
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        return match.group(0)
-    return text

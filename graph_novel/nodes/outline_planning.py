@@ -10,14 +10,16 @@ Node 3: 大纲规划 Agent
 """
 
 import json
-import re
-from enum import Enum
-from typing import Any, Dict, List, Optional
 
 from graph_novel.state import (
     GraphNovelState, NodeStatus, NovelOutline, ChapterOutline,
 )
 from graph_novel.llm import call_llm_sync
+from graph_novel.output_contracts import (
+    call_json_with_contract_sync,
+    outline_contract,
+    to_prompt_data,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的资深大纲规划师。你的任务是设计一部网文的完整章节大纲，
 核心原则：快节奏、爽点密集、章章有钩子、黄金三章定生死。
@@ -64,7 +66,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     state.log("节点3: 大纲规划 — 生成章节大纲……")
     state.node_status["outline_planning"] = NodeStatus.IN_PROGRESS
 
-    world_dict = _serialize_dataclass(state.world_setting) if state.world_setting else {}
+    world_dict = to_prompt_data(state.world_setting) if state.world_setting else {}
     world_json = json.dumps(world_dict, ensure_ascii=False, indent=2)
 
     char_summary = []
@@ -96,18 +98,15 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 生成恰好 {total_chapters} 章的完整大纲 JSON。特别是前3章要严格按黄金三章法则设计。"""
 
     try:
-        raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=0.7)
-        json_text = _extract_json(raw)
-        data = json.loads(json_text)
-        if not isinstance(data, dict):
-            raise ValueError("大纲响应必须是 JSON 对象")
-        chapter_data = data.get("chapter_outlines")
-        if not isinstance(chapter_data, list) or not chapter_data:
-            raise ValueError("大纲响应缺少 chapter_outlines")
-        if len(chapter_data) != total_chapters:
-            raise ValueError(
-                f"大纲章数不匹配：期望 {total_chapters}，实际 {len(chapter_data)}"
-            )
+        data = call_json_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            contract=outline_contract(total_chapters),
+            max_tokens=8192,
+            temperature=0.7,
+        )
+        chapter_data = data["chapter_outlines"]
 
         chapters = []
         for co in chapter_data:
@@ -141,29 +140,3 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         state.log(f"节点3: 大纲规划 — 失败: {e}")
 
     return state
-
-
-def _extract_json(text: str) -> str:
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-    if match:
-        return match.group(1)
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        return match.group(0)
-    return text
-
-
-def _serialize_dataclass(obj):
-    if obj is None:
-        return None
-    if hasattr(obj, 'to_dict'):
-        return obj.to_dict()
-    if hasattr(obj, '__dataclass_fields__'):
-        return {k: _serialize_dataclass(getattr(obj, k)) for k in obj.__dataclass_fields__}
-    if isinstance(obj, list):
-        return [_serialize_dataclass(x) for x in obj]
-    if isinstance(obj, dict):
-        return {k: _serialize_dataclass(v) for k, v in obj.items()}
-    if isinstance(obj, Enum):
-        return obj.value
-    return obj

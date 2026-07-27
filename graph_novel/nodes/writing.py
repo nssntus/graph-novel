@@ -3,11 +3,12 @@ Node 5: 章节写作 Agent
 针对番茄小说平台：2000-2500字/章，对话驱动，手机阅读适配，章末强钩子。
 """
 
-import re
-from typing import Optional, Tuple
-
 from graph_novel.state import GraphNovelState, NodeStatus, Foreshadowing
 from graph_novel.llm import call_llm_sync
+from graph_novel.output_contracts import (
+    call_text_with_contract_sync,
+    parse_chapter_response,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的签约作者。你写快节奏爽文，擅长制造爽点和钩子。
 
@@ -102,11 +103,15 @@ POV角色：{outline.pov_character if outline else '主角'}
 请写出2000-2500字的章节正文。记住：对话驱动、手机阅读适配、章末强钩子、避免AI写作禁忌。"""
 
     try:
-        raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=0.85)
-        prose, meta = _parse_response(raw)
-        if not prose:
-            raise ValueError("章节写作响应没有正文")
-        meta = _validate_generation_meta(meta)
+        prose, meta = call_text_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            parser=parse_chapter_response,
+            contract_name="章节正文与 META",
+            max_tokens=8192,
+            temperature=0.85,
+        )
 
         chapter.draft = prose
         chapter.word_count = len(prose.replace(' ', ''))  # 中文按字数算
@@ -124,43 +129,6 @@ POV角色：{outline.pov_character if outline else '主角'}
         state.log(f"节点5: 章节写作 — 失败: {e}")
 
     return state
-
-
-def _parse_response(text: str) -> Tuple[str, Optional[dict]]:
-    if "---META---" in text:
-        parts = text.split("---META---", 1)
-        prose = parts[0].strip()
-        meta_text = parts[1].strip()
-        import json as _json
-        try:
-            match = re.search(r"\{[\s\S]*\}", meta_text)
-            if match:
-                meta = _json.loads(match.group(0))
-            else:
-                meta = None
-        except _json.JSONDecodeError:
-            meta = None
-        return prose, meta
-    return text.strip(), None
-
-
-def _validate_generation_meta(meta: Optional[dict]) -> dict:
-    """Reject malformed META before it can reach the approval commit."""
-    if meta is None:
-        return {}
-    if not isinstance(meta, dict):
-        raise ValueError("章节 META 必须是 JSON 对象")
-
-    for key in ("foreshadowing_planted", "foreshadowing_paid"):
-        items = meta.get(key, [])
-        if not isinstance(items, list) or any(
-            not isinstance(item, dict) for item in items
-        ):
-            raise ValueError(f"章节 META 的 {key} 必须是对象列表")
-
-    if not isinstance(meta.get("character_moments", {}), dict):
-        raise ValueError("章节 META 的 character_moments 必须是 JSON 对象")
-    return meta
 
 
 def commit_generation_meta(state: GraphNovelState, ch_num: int) -> None:

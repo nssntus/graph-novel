@@ -1,6 +1,6 @@
 # GraphNovel 改造与修复计划
 
-**状态**：批次 0–4 完成；下一批为 LLM 输出契约与供应商适配
+**状态**：批次 0–5 的 Mock 闭环完成；真实 API smoke test 待费用授权
 **制定日期**：2026-07-27  
 **原则**：先恢复正确性，再增强图运行时，最后优化模型质量和体验。
 
@@ -182,12 +182,12 @@ flowchart TD
 
 任务：
 
-- [ ] 为各节点定义明确的响应 Schema 和字段校验。
-- [ ] 将重复的 JSON 提取、序列化和错误处理收敛到共享工具。
-- [ ] 对可恢复的格式错误实施有限次数的结构修复/重试。
-- [ ] 模型、base URL、超时和有限重试策略改为统一配置。
-- [ ] 核验 DeepSeek 官方 API 当前支持的模型和参数。
-- [ ] 在用户授权的 API 费用范围内运行最小真实 smoke test。
+- [x] 为各节点定义明确的响应 Schema 和字段校验。
+- [x] 将重复的 JSON 提取、序列化和错误处理收敛到共享工具。
+- [x] 对可恢复的格式错误实施有限次数的结构修复/重试。
+- [x] 模型、base URL、超时和有限重试策略改为统一配置。
+- [x] 核验 DeepSeek 官方 API 当前支持的模型和参数。
+- [ ] 在用户授权的 API 费用范围内运行最小真实 smoke test（当前未授权，未调用）。
 
 成功标准：
 
@@ -293,3 +293,17 @@ flowchart TD
 - 未调用真实 DeepSeek API。
 - 已知边界：当前项目锁是单 Flask 进程内互斥；未来若改为多进程或多实例部署，需要文件锁、数据库锁或任务队列。
 - 下一批入口：收敛节点 JSON Schema、共享解析与有限结构修复，然后核验 DeepSeek 当前官方模型参数。
+
+### 2026-07-27：第四轮 LLM 输出契约与供应商适配
+
+- 完成批次 5 的无费用部分；世界观、人物、大纲、章节规划、写作 META、一致性审查、润色和全局终审均在节点边界校验响应。
+- 新增共享输出契约层，统一处理 JSON 代码块/前后缀提取、严格顶层类型、必填字段、嵌套类型、分数范围、章号和目标章数。
+- 结构化节点统一启用 DeepSeek `response_format={"type": "json_object"}`；人物响应由裸数组改为 `{"characters": [...]}` 对象，以符合 JSON Output。
+- JSON、正文 + META 和纯正文格式错误默认只重新生成一次；API/网络异常不会被节点格式层重复调用。
+- `graph_novel/llm.py` 集中管理模型、base URL、超时、客户端重试、格式重试、thinking 和 reasoning effort；Web 创意对话不再自行硬编码模型调用。
+- 依据 DeepSeek 官方文档核验：当前模型为 `deepseek-v4-pro` / `deepseek-v4-flash`，OpenAI 格式 base URL 为 `https://api.deepseek.com`；JSON Output 使用 `response_format`；thinking 通过 `extra_body` 控制，启用 thinking 时 temperature 不生效。
+- 官方核验来源：`https://api-docs.deepseek.com/api/create-chat-completion`、`https://api-docs.deepseek.com/guides/json_mode/`、`https://api-docs.deepseek.com/guides/thinking_mode`。
+- Mock 集成测试扩展到 21 项：`python3 tests/test_integration.py`，21/21 通过；另通过 Python 3.9 语法编译检查和 `git diff --check`。
+- 未读取 `.env`，未调用真实 DeepSeek API，未产生 API 费用；最小真实 smoke test 保留为明确授权后的独立动作。
+- 已知边界：严格契约可能暴露真实模型中此前被宽松 `.get()` 掩盖的字段遗漏；默认的一次格式重试用于恢复此类输出，连续失败会保留可观察的 `FAILED checkpoint`。
+- 下一批入口：如授权费用，先做单个最小 JSON smoke test；否则进入批次 6 的可观察性和完整 Web 流程验证。

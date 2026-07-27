@@ -3,10 +3,12 @@ Node 7: 风格润色 Agent
 针对番茄小说：优化网感、消除AI味、强化爽点表达、适配手机阅读。
 """
 
-import re
-
 from graph_novel.state import GraphNovelState, NodeStatus
 from graph_novel.llm import call_llm_sync
+from graph_novel.output_contracts import (
+    call_text_with_contract_sync,
+    require_nonempty_text,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的文字润色师。你专门消除AI写作痕迹，提升"网感"，让文字更符合手机阅读习惯。
 
@@ -71,10 +73,15 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 请润色并输出完整正文。"""
 
     try:
-        raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=0.5)
-        polished, notes = _parse_response(raw)
-        if not polished:
-            raise ValueError("风格润色响应没有正文")
+        polished, notes = call_text_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            parser=_parse_response,
+            contract_name="风格润色正文",
+            max_tokens=8192,
+            temperature=0.5,
+        )
         chapter.polished_draft = polished
         chapter.word_count = len(polished.replace(' ', ''))
 
@@ -97,5 +104,6 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 def _parse_response(text: str):
     if "---编辑建议---" in text:
         parts = text.split("---编辑建议---", 1)
-        return parts[0].strip(), parts[1].strip()
-    return text.strip(), ""
+        polished = require_nonempty_text(parts[0], name="风格润色")
+        return polished, parts[1].strip()
+    return require_nonempty_text(text, name="风格润色"), ""

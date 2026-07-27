@@ -3,11 +3,12 @@ Node 9: 全局收束审查 Agent
 针对番茄小说：逐章数据汇总 + 算法适配评估 + 完读率预估 + 全本质量报告。
 """
 
-import json
-import re
-
 from graph_novel.state import GraphNovelState, NodeStatus
 from graph_novel.llm import call_llm_sync
+from graph_novel.output_contracts import (
+    GLOBAL_REVIEW_CONTRACT,
+    call_json_with_contract_sync,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的数据分析师兼总编辑。你审查一部已完成全部章节的网络小说，从算法推荐和读者留存的角度给出全局评估。
 
@@ -97,11 +98,14 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 请执行全局审查，输出 JSON 报告。"""
 
     try:
-        raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=0.4)
-        json_text = _extract_json(raw)
-        report = json.loads(json_text)
-        if not isinstance(report, dict):
-            raise ValueError("全局终审响应必须是 JSON 对象")
+        report = call_json_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            contract=GLOBAL_REVIEW_CONTRACT,
+            max_tokens=8192,
+            temperature=0.4,
+        )
         state.global_review_report = report
         state.node_status["global_review"] = NodeStatus.COMPLETED
         score = report.get("overall_score", "?")
@@ -143,13 +147,3 @@ def _build_foreshadowing_summary(state: GraphNovelState) -> str:
              (f"，第{fs.payoff_chapter}章收）" if fs.payoff_chapter else "，未收）")
              for fs in state.foreshadowing_tracker]
     return "\n".join(items) if items else "无伏笔。"
-
-
-def _extract_json(text: str) -> str:
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-    if match:
-        return match.group(1)
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        return match.group(0)
-    return text

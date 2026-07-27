@@ -189,6 +189,11 @@ MOCK_CONSISTENCY_REPORT = {
             "suggested_fix": "Add internal tension — she wants to speak out but holds back.",
         },
     ],
+    "hook_quality": "强钩子",
+    "hook_review": "黑蜡封印有效制造悬念。",
+    "shuangdian_delivery": "到位",
+    "ai_disease_count": 0,
+    "dialogue_ratio_estimate": "60%",
     "requires_rewrite": False,
     "character_arc_updates": {
         "Aria": "rising_action",
@@ -199,6 +204,24 @@ MOCK_CONSISTENCY_REPORT = {
 
 MOCK_GLOBAL_REVIEW = {
     "overall_score": 8,
+    "golden_three_analysis": {
+        "ch1_quality": "strong",
+        "ch2_quality": "solid",
+        "ch3_quality": "strong",
+        "estimated_ch3_retention": "55%",
+    },
+    "shuangdian_analysis": {
+        "density": "适中",
+        "small_beats_count": 1,
+        "big_beats_count": 1,
+        "issues": [],
+    },
+    "hook_analysis": {
+        "strong": 2,
+        "weak": 1,
+        "missing": 0,
+        "problem_chapters": [],
+    },
     "arc_review": {
         "Aria": {
             "arc_path": "Duty → Questioning → Independence — well-structured",
@@ -211,22 +234,51 @@ MOCK_GLOBAL_REVIEW = {
             "issues": ["Motivations could be explored more deeply in chapter 2"],
         },
     },
-    "foreshadowing_audit": {
-        "unpaid": [],
-        "orphaned_payoffs": [],
-        "suggestions": ["The black wax seal could be referenced more in later chapters"],
+    "ai_disease_summary": {
+        "total_found": 0,
+        "high_risk_chapters": [],
+        "overall_risk": "低",
     },
-    "pacing_analysis": {
-        "word_count_per_chapter": {"1": 2100, "2": 2500, "3": 2300},
-        "sagging_sections": [],
-        "rushed_sections": [],
-        "recommendations": ["Good pacing overall"],
+    "algorithm_fitness": {
+        "estimated_ch10_retention": "50%",
+        "estimated_10w_retention": "35%",
+        "estimated_follow_rate": "15%",
+        "shouxiu_ready": True,
     },
-    "thematic_assessment": "Loyalty theme is consistently explored.",
+    "platform_competitiveness": {
+        "strength": "Strong opening",
+        "weakness": "Kael needs more depth",
+        "differentiation": "The black wax conspiracy",
+    },
     "structural_issues": [],
     "final_recommendations": ["Strengthen Kael's POV in chapter 2"],
-    "ready_for_publication": False,
+    "ready_for_platform": False,
 }
+
+
+def mock_chapter_plan(title="Test", chapter_number=1):
+    return json.dumps({
+        "chapter_number": chapter_number,
+        "title": title,
+        "scene_plan": [],
+        "pov_character": "Aria",
+        "opening_hook": "刺客闯入",
+        "closing_hook": "黑蜡封印裂开",
+        "dialogue_highlights": [],
+        "shuangdian_beat": "铺垫",
+        "continuity_notes": {},
+        "ai_taboos_check": [],
+    })
+
+
+def mock_chapter_response(prose=MOCK_CHAPTER_DRAFT):
+    return prose + "\n\n---META---\n" + json.dumps({
+        "chapter_hook": "黑蜡封印突然裂开",
+        "shuangdian_beat": "铺垫",
+        "foreshadowing_planted": [],
+        "foreshadowing_paid": [],
+        "character_moments": {},
+    })
 
 
 # ======================================================================
@@ -301,8 +353,10 @@ def test_chapter_pipeline_with_mocks():
          mock.patch("graph_novel.nodes.writing.call_llm_sync") as mock_write, \
          mock.patch("graph_novel.nodes.consistency_review.call_llm_sync") as mock_review, \
          mock.patch("graph_novel.nodes.style_polish.call_llm_sync") as mock_polish:
-        mock_plan.return_value = json.dumps({"chapter_number": 1, "title": "Chapter 1"})
+        mock_plan.return_value = mock_chapter_plan("Chapter 1")
         mock_write.return_value = MOCK_CHAPTER_DRAFT + "\n\n---META---\n" + json.dumps({
+            "chapter_hook": "黑蜡封印突然裂开",
+            "shuangdian_beat": "铺垫",
             "foreshadowing_planted": [
                 {"description": "Black seal on the scroll hints at conspiracy", "scene_context": "Throne room"},
             ],
@@ -343,7 +397,18 @@ def test_consistency_rewrite_loop():
 
     bad_review = {
         "overall_score": 3,
-        "issues": [{"severity": "critical", "category": "ooc", "description": "Major OOC", "suggested_fix": ""}],
+        "issues": [{
+            "severity": "critical",
+            "category": "ooc",
+            "description": "Major OOC",
+            "location_hint": "Opening scene",
+            "suggested_fix": "",
+        }],
+        "hook_quality": "弱钩子",
+        "hook_review": "悬念不足",
+        "shuangdian_delivery": "未兑现",
+        "ai_disease_count": 1,
+        "dialogue_ratio_estimate": "40%",
         "requires_rewrite": True,
         "character_arc_updates": {},
         "summary": "Bad",
@@ -352,6 +417,11 @@ def test_consistency_rewrite_loop():
     good_review = {
         "overall_score": 7,
         "issues": [],
+        "hook_quality": "强钩子",
+        "hook_review": "悬念有效",
+        "shuangdian_delivery": "到位",
+        "ai_disease_count": 0,
+        "dialogue_ratio_estimate": "60%",
         "requires_rewrite": False,
         "character_arc_updates": {},
         "summary": "Good",
@@ -369,8 +439,8 @@ def test_consistency_rewrite_loop():
          mock.patch("graph_novel.nodes.writing.call_llm_sync") as mock_write, \
          mock.patch("graph_novel.nodes.consistency_review.call_llm_sync") as mock_review, \
          mock.patch("graph_novel.nodes.style_polish.call_llm_sync") as mock_polish:
-        mock_plan.return_value = json.dumps({"chapter_number": 1, "title": "Test"})
-        mock_write.return_value = MOCK_CHAPTER_DRAFT
+        mock_plan.return_value = mock_chapter_plan()
+        mock_write.return_value = mock_chapter_response()
         mock_review.side_effect = mock_review_fn
         mock_polish.return_value = MOCK_CHAPTER_DRAFT
 
@@ -604,19 +674,21 @@ def _foundation_llm_mocks(chapter_count=2):
         "golden_finger": "信息差兑换系统",
         "notes": "",
     }, ensure_ascii=False)
-    characters = json.dumps([{
-        "name": "林凡",
-        "role": "主角",
-        "background": "重生前创业失败。",
-        "personality": "冷静、果断",
-        "motivation": "弥补遗憾并建立商业帝国",
-        "golden_finger": "信息差兑换系统",
-        "arc_stage": "inciting_incident",
-        "arc_description": "从失败者成长为负责任的领导者。",
-        "relationships": {},
-        "first_appearance_hook": "当众指出所有人都不知道的商机",
-        "notes": "",
-    }], ensure_ascii=False)
+    characters = json.dumps({
+        "characters": [{
+            "name": "林凡",
+            "role": "主角",
+            "background": "重生前创业失败。",
+            "personality": "冷静、果断",
+            "motivation": "弥补遗憾并建立商业帝国",
+            "golden_finger": "信息差兑换系统",
+            "arc_stage": "inciting_incident",
+            "arc_description": "从失败者成长为负责任的领导者。",
+            "relationships": {},
+            "first_appearance_hook": "当众指出所有人都不知道的商机",
+            "notes": "",
+        }],
+    }, ensure_ascii=False)
     outlines = []
     for number in range(1, chapter_count + 1):
         outlines.append({
@@ -640,6 +712,239 @@ def _foundation_llm_mocks(chapter_count=2):
         "chapter_outlines": outlines,
     }, ensure_ascii=False)
     return world, characters, outline
+
+
+def test_output_contract_parsing_and_retry():
+    """Structured output retries format errors once and rejects bad schemas."""
+    print("  Testing output contracts + bounded retry...", end=" ")
+    from graph_novel.output_contracts import (
+        CONSISTENCY_REVIEW_CONTRACT,
+        OutputContractError,
+        WORLD_SETTING_CONTRACT,
+        call_json_with_contract_sync,
+        call_text_with_contract_sync,
+        outline_contract,
+        parse_chapter_response,
+        parse_json_response,
+    )
+
+    world, _, _ = _foundation_llm_mocks()
+    parsed = parse_json_response(
+        f"模型说明\n```json\n{world}\n```\n结束",
+        expected_type=dict,
+    )
+    assert parsed["era"] == "现代都市"
+
+    try:
+        parse_json_response(f"[{world}]", expected_type=dict)
+        raise AssertionError("Expected wrong top-level JSON type")
+    except OutputContractError as exc:
+        assert "顶层类型错误" in str(exc)
+
+    llm_call = mock.Mock(side_effect=["not-json", world])
+    validated = call_json_with_contract_sync(
+        llm_call,
+        "输出 JSON 对象。",
+        "生成世界观。",
+        contract=WORLD_SETTING_CONTRACT,
+        max_tokens=512,
+        temperature=0.2,
+        format_retries=1,
+    )
+    assert validated["location"] == "东海市"
+    assert llm_call.call_count == 2
+    assert "上一轮响应未通过" in llm_call.call_args_list[1].args[1]
+    assert llm_call.call_args_list[0].kwargs["response_format"] == {
+        "type": "json_object",
+    }
+
+    bad_score = {
+        "overall_score": 11,
+        "issues": [],
+        "hook_quality": "强钩子",
+        "hook_review": "有效",
+        "shuangdian_delivery": "到位",
+        "ai_disease_count": 0,
+        "dialogue_ratio_estimate": "60%",
+        "requires_rewrite": False,
+        "character_arc_updates": {},
+        "summary": "非法分数",
+    }
+    try:
+        CONSISTENCY_REVIEW_CONTRACT.validate(bad_score)
+        raise AssertionError("Expected invalid score to fail")
+    except OutputContractError as exc:
+        assert "overall_score" in str(exc)
+
+    wrong_world_type = json.loads(world)
+    wrong_world_type["key_locations"] = "东海市"
+    try:
+        WORLD_SETTING_CONTRACT.validate(wrong_world_type)
+        raise AssertionError("Expected wrong field type to fail")
+    except OutputContractError as exc:
+        assert "key_locations" in str(exc)
+
+    _, _, two_chapter_outline = _foundation_llm_mocks(chapter_count=2)
+    try:
+        outline_contract(3).validate(json.loads(two_chapter_outline))
+        raise AssertionError("Expected wrong chapter count to fail")
+    except OutputContractError as exc:
+        assert "章数不匹配" in str(exc)
+
+    valid_chapter_response = mock_chapter_response()
+    mixed_call = mock.Mock(side_effect=[
+        MOCK_CHAPTER_DRAFT + "\n---META---\n{}",
+        valid_chapter_response,
+    ])
+    prose, meta = call_text_with_contract_sync(
+        mixed_call,
+        "输出正文和 META。",
+        "写第一章。",
+        parser=parse_chapter_response,
+        contract_name="章节正文与 META",
+        format_retries=1,
+    )
+    assert prose == MOCK_CHAPTER_DRAFT
+    assert meta["chapter_hook"] == "黑蜡封印突然裂开"
+    assert mixed_call.call_count == 2
+    assert "原始响应格式" in mixed_call.call_args_list[1].args[1]
+    assert "只输出符合原始字段要求的 JSON" not in (
+        mixed_call.call_args_list[1].args[1]
+    )
+
+    api_failure = mock.Mock(side_effect=RuntimeError("provider unavailable"))
+    try:
+        call_json_with_contract_sync(
+            api_failure,
+            "输出 JSON。",
+            "生成。",
+            contract=WORLD_SETTING_CONTRACT,
+            format_retries=1,
+        )
+        raise AssertionError("Expected provider failure")
+    except RuntimeError:
+        pass
+    assert api_failure.call_count == 1
+    print("✓ PASSED")
+
+
+def test_llm_provider_configuration():
+    """Provider settings and DeepSeek-specific request parameters are centralized."""
+    print("  Testing DeepSeek provider configuration...", end=" ")
+    import asyncio
+    from graph_novel import llm
+
+    with mock.patch.dict(
+        os.environ,
+        {
+            "DEEPSEEK_API_KEY": "test-key",
+            "DEEPSEEK_BASE_URL": "https://api.deepseek.example",
+            "DEEPSEEK_MODEL": "deepseek-v4-flash",
+            "DEEPSEEK_TIMEOUT_SECONDS": "45",
+            "DEEPSEEK_API_RETRIES": "1",
+            "DEEPSEEK_FORMAT_RETRIES": "1",
+            "DEEPSEEK_THINKING": "disabled",
+        },
+    ), mock.patch("graph_novel.llm.OpenAI") as openai_cls:
+        client = mock.Mock()
+        response = mock.Mock()
+        response.choices = [mock.Mock(message=mock.Mock(content='{"ok": true}'))]
+        client.chat.completions.create.return_value = response
+        openai_cls.return_value = client
+
+        settings = llm.get_llm_settings()
+        assert settings.model == "deepseek-v4-flash"
+        assert settings.base_url == "https://api.deepseek.example"
+        assert settings.timeout_seconds == 45
+        assert settings.api_retries == 1
+        assert settings.format_retries == 1
+
+        result = asyncio.run(llm.call_llm(
+            "请输出 JSON。",
+            "测试",
+            response_format={"type": "json_object"},
+        ))
+        assert result == '{"ok": true}'
+        openai_cls.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://api.deepseek.example",
+            timeout=45,
+            max_retries=1,
+        )
+        request = client.chat.completions.create.call_args.kwargs
+        assert request["model"] == "deepseek-v4-flash"
+        assert request["temperature"] == 0.7
+        assert request["response_format"] == {"type": "json_object"}
+        assert request["extra_body"] == {"thinking": {"type": "disabled"}}
+
+        os.environ["DEEPSEEK_THINKING"] = "enabled"
+        asyncio.run(llm.call_llm("系统", "思考模式测试"))
+        thinking_request = client.chat.completions.create.call_args.kwargs
+        assert thinking_request["reasoning_effort"] == "high"
+        assert "temperature" not in thinking_request
+        assert thinking_request["extra_body"] == {
+            "thinking": {"type": "enabled"},
+        }
+    print("✓ PASSED")
+
+
+def test_node_contract_failures_are_observable():
+    """A schema violation fails its node after one bounded format retry."""
+    print("  Testing node contract failure state...", end=" ")
+    from graph_novel.nodes import consistency_review, world_building
+
+    invalid_world = {
+        "era": "现代都市",
+        "location": "东海市",
+        "special_setting": "信息差兑换",
+        "technology_level": "现代",
+        "social_structure": "商业社会",
+        "key_locations": [],
+        "rules_and_laws": "兑换需要行动",
+        "history": "主角刚重生",
+        "golden_finger": "信息差系统",
+        # notes is deliberately missing
+    }
+    state = GraphNovelState(novel_title="契约失败测试", total_chapters=1)
+    with mock.patch.dict(
+        os.environ,
+        {"DEEPSEEK_FORMAT_RETRIES": "1"},
+    ), mock.patch(
+        "graph_novel.nodes.world_building.call_llm_sync",
+        return_value=json.dumps(invalid_world, ensure_ascii=False),
+    ) as world_call:
+        world_building.run_node(state)
+    assert world_call.call_count == 2
+    assert state.node_status["world_building"] == NodeStatus.FAILED
+    assert "notes" in state.last_error["message"]
+
+    review_state = make_sample_state()
+    review_state.current_chapter = 1
+    review_state.chapters[0].draft = MOCK_CHAPTER_DRAFT
+    invalid_review = {
+        "overall_score": 0,
+        "issues": [],
+        "hook_quality": "无效",
+        "hook_review": "无",
+        "shuangdian_delivery": "未兑现",
+        "ai_disease_count": 0,
+        "dialogue_ratio_estimate": "0%",
+        "requires_rewrite": True,
+        "character_arc_updates": {},
+        "summary": "非法分数",
+    }
+    with mock.patch.dict(
+        os.environ,
+        {"DEEPSEEK_FORMAT_RETRIES": "1"},
+    ), mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=json.dumps(invalid_review, ensure_ascii=False),
+    ) as review_call:
+        consistency_review.run_node(review_state)
+    assert review_call.call_count == 2
+    assert review_state.node_status["consistency_review_1"] == NodeStatus.FAILED
+    assert "overall_score" in review_state.last_error["message"]
+    print("✓ PASSED")
 
 
 def test_foundation_gate_and_feedback_edge():
@@ -1209,6 +1514,9 @@ def run_all_tests():
         test_data_models,
         test_state_serialization,
         test_graph_engine_routing,
+        test_output_contract_parsing_and_retry,
+        test_llm_provider_configuration,
+        test_node_contract_failures_are_observable,
         test_chapter_pipeline_with_mocks,
         test_consistency_rewrite_loop,
         test_global_review,

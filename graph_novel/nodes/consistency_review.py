@@ -3,11 +3,12 @@ Node 6: 一致性审查 Agent
 针对番茄小说：检查 OOC、逻辑漏洞、AI写作病、爽点兑现、节奏问题。
 """
 
-import json
-import re
-
 from graph_novel.state import GraphNovelState, NodeStatus, ArcStage
 from graph_novel.llm import call_llm_sync
+from graph_novel.output_contracts import (
+    CONSISTENCY_REVIEW_CONTRACT,
+    call_json_with_contract_sync,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的"毒舌主编"，拥有15年网文审稿经验。你的任务是用挑剔的眼光审查章节，找出所有问题。
 
@@ -98,9 +99,14 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 请从毒舌主编视角严格审查，输出 JSON 报告。"""
 
     try:
-        raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=0.3)
-        json_text = _extract_json(raw)
-        report = json.loads(json_text)
+        report = call_json_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            contract=CONSISTENCY_REVIEW_CONTRACT,
+            max_tokens=4096,
+            temperature=0.3,
+        )
 
         chapter.consistency_report = report
         state.node_status[f"consistency_review_{ch_num}"] = NodeStatus.COMPLETED
@@ -157,13 +163,3 @@ def _prev_summary(state: GraphNovelState) -> str:
 def _foreshadowing_status(state: GraphNovelState) -> str:
     items = [f"[{fs.id}] {fs.status}: {fs.description[:80]}（第{fs.planted_in_chapter}章）" for fs in state.foreshadowing_tracker]
     return "\n".join(items) if items else "无"
-
-
-def _extract_json(text: str) -> str:
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-    if match:
-        return match.group(1)
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        return match.group(0)
-    return text

@@ -3,11 +3,12 @@ Node 1: 世界观构建 Agent
 针对番茄小说平台：生成适合快节奏脑洞网文的世界设定。
 """
 
-import json
-import re
-
 from graph_novel.state import GraphNovelState, NodeStatus, WorldSetting
 from graph_novel.llm import call_llm_sync
+from graph_novel.output_contracts import (
+    WORLD_SETTING_CONTRACT,
+    call_json_with_contract_sync,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的金牌世界观架构师。你的任务是为中文网络小说创建一个简洁、高辨识度、适合快节奏阅读的世界设定。
 
@@ -65,20 +66,25 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 生成完整世界设定 JSON。"""
 
     try:
-        raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=0.8)
-        json_text = _extract_json(raw)
-        data = json.loads(json_text)
+        data = call_json_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            contract=WORLD_SETTING_CONTRACT,
+            max_tokens=4096,
+            temperature=0.8,
+        )
 
         state.world_setting = WorldSetting(
-            era=data.get("era", ""),
-            location=data.get("location", ""),
-            magic_system=data.get("special_setting") or data.get("magic_system"),
-            technology_level=data.get("technology_level"),
-            social_structure=data.get("social_structure", ""),
-            key_locations=data.get("key_locations", []),
-            rules_and_laws=data.get("rules_and_laws", ""),
-            history=data.get("history", ""),
-            notes=f"金手指：{data.get('golden_finger', '')} | {data.get('notes', '')}",
+            era=data["era"],
+            location=data["location"],
+            magic_system=data["special_setting"],
+            technology_level=data["technology_level"],
+            social_structure=data["social_structure"],
+            key_locations=data["key_locations"],
+            rules_and_laws=data["rules_and_laws"],
+            history=data["history"],
+            notes=f"金手指：{data['golden_finger']} | {data['notes']}",
         )
         state.node_status["world_building"] = NodeStatus.COMPLETED
         state.log("节点1: 世界观构建 — 完成。")
@@ -88,13 +94,3 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         state.log(f"节点1: 世界观构建 — 失败: {e}")
 
     return state
-
-
-def _extract_json(text: str) -> str:
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-    if match:
-        return match.group(1)
-    match = re.search(r"\{[\s\S]*\}", text)
-    if match:
-        return match.group(0)
-    return text

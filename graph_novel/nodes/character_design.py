@@ -5,14 +5,16 @@ Node 2: 人物设计 Agent
 """
 
 import json
-import re
-from enum import Enum
-from typing import Any, Dict, List, Optional
 
 from graph_novel.state import (
     GraphNovelState, NodeStatus, Character, CharacterArc, ArcStage,
 )
 from graph_novel.llm import call_llm_sync
+from graph_novel.output_contracts import (
+    CHARACTER_DESIGN_CONTRACT,
+    call_json_with_contract_sync,
+    to_prompt_data,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的御用角色设计师。你为快节奏爽文创造让读者"一眼记住、立刻代入"的角色。
 
@@ -25,7 +27,7 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的御用角色设计师。你�
 6. 男频：主角杀伐果断，不圣母不拖泥带水
 7. 配角：每人一个记忆标签，服务于"黄金三章"节奏
 
-输出 JSON 数组，每个角色包含：
+输出 JSON 对象，顶层只有 characters 数组；数组中每个角色包含：
 - name: 角色名（中文）
 - role: 角色定位（主角/反派/女主/男配/女配/导师/金手指载体）
 - background: 背景故事（2-3句，突出与主线冲突的关联）
@@ -44,14 +46,14 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的御用角色设计师。你�
 - 1个女主/男主（如果涉及感情线）
 - 2-4个配角（各有标签功能）
 
-请只输出 JSON 数组，不要其他文字。"""
+请只输出 {"characters": [...]} JSON 对象，不要其他文字。"""
 
 
 def run_node(state: GraphNovelState) -> GraphNovelState:
     state.log("节点2: 人物设计 — 生成角色阵容……")
     state.node_status["character_design"] = NodeStatus.IN_PROGRESS
 
-    world_dict = _serialize_dataclass(state.world_setting) if state.world_setting else {}
+    world_dict = to_prompt_data(state.world_setting) if state.world_setting else {}
     world_json = json.dumps(world_dict, ensure_ascii=False, indent=2)
 
     genre_tags = ", ".join(state.genre_tags) if state.genre_tags else "未指定"
@@ -72,12 +74,17 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 生成完整的角色阵容 JSON。"""
 
     try:
-        raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=0.8)
-        json_text = _extract_json(raw)
-        data = json.loads(json_text)
+        data = call_json_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            contract=CHARACTER_DESIGN_CONTRACT,
+            max_tokens=4096,
+            temperature=0.8,
+        )
 
         characters = []
-        for c in data:
+        for c in data["characters"]:
             arc_stage_str = c.get("arc_stage", "pre_story")
             try:
                 arc_stage = ArcStage(arc_stage_str)
@@ -110,29 +117,3 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         state.log(f"节点2: 人物设计 — 失败: {e}")
 
     return state
-
-
-def _extract_json(text: str) -> str:
-    match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
-    if match:
-        return match.group(1)
-    match = re.search(r"\[[\s\S]*\]", text)
-    if match:
-        return match.group(0)
-    return text
-
-
-def _serialize_dataclass(obj):
-    if obj is None:
-        return None
-    if hasattr(obj, 'to_dict'):
-        return obj.to_dict()
-    if hasattr(obj, '__dataclass_fields__'):
-        return {k: _serialize_dataclass(getattr(obj, k)) for k in obj.__dataclass_fields__}
-    if isinstance(obj, list):
-        return [_serialize_dataclass(x) for x in obj]
-    if isinstance(obj, dict):
-        return {k: _serialize_dataclass(v) for k, v in obj.items()}
-    if isinstance(obj, Enum):
-        return obj.value
-    return obj

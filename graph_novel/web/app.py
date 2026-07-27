@@ -549,15 +549,12 @@ def api_chat(project_id: str):
     messages.append({"role": "user", "content": user_message})
 
     try:
-        from graph_novel.llm import _get_client
-        client = _get_client()
-        resp = client.chat.completions.create(
-            model="deepseek-v4-pro",
-            messages=messages,
+        from graph_novel.llm import call_llm_messages_sync
+        reply = call_llm_messages_sync(
+            messages,
             max_tokens=2000,
             temperature=0.8,
         )
-        reply = resp.choices[0].message.content.strip()
         return jsonify({"success": True, "reply": reply})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
