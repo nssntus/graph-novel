@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-CURRENT_STATE_VERSION = 3
+CURRENT_STATE_VERSION = 4
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -167,6 +167,7 @@ class GraphNovelState:
     workflow_phase: str = "foundation"
     pending_gate: Optional[str] = None
     last_error: Dict[str, Any] = field(default_factory=dict)
+    active_task: Dict[str, Any] = field(default_factory=dict)
 
     # -- Phase 2: Chapter pipeline
     chapters: List[Chapter] = field(default_factory=list)

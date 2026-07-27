@@ -160,21 +160,7 @@ class GraphNovelEngine:
 
     def run_foundation_generation(self) -> GraphNovelState:
         """Run Foundation nodes and stop at the persisted human approval gate."""
-        if (
-            self.state.pending_gate == "foundation"
-            and self.state.foundation_approval == ApprovalStatus.PENDING
-        ):
-            raise GraphExecutionError(
-                "human_approval_foundation",
-                "Foundation is already waiting for approval.",
-                code="invalid_transition",
-            )
-        if self.state.foundation_approval == ApprovalStatus.APPROVED:
-            raise GraphExecutionError(
-                "human_approval_foundation",
-                "Approved Foundation cannot be regenerated.",
-                code="invalid_transition",
-            )
+        self.validate_foundation_generation()
 
         self.phase = GraphPhase.FOUNDATION
         self.state.workflow_phase = "foundation"
@@ -199,6 +185,24 @@ class GraphNovelEngine:
         self.state.save()
         self.state.log("Foundation generated — awaiting human approval.")
         return self.state
+
+    def validate_foundation_generation(self) -> None:
+        """Validate a Foundation generation transition without mutating State."""
+        if (
+            self.state.pending_gate == "foundation"
+            and self.state.foundation_approval == ApprovalStatus.PENDING
+        ):
+            raise GraphExecutionError(
+                "human_approval_foundation",
+                "Foundation is already waiting for approval.",
+                code="invalid_transition",
+            )
+        if self.state.foundation_approval == ApprovalStatus.APPROVED:
+            raise GraphExecutionError(
+                "human_approval_foundation",
+                "Approved Foundation cannot be regenerated.",
+                code="invalid_transition",
+            )
 
     def apply_foundation_decision(
         self,
@@ -302,7 +306,8 @@ class GraphNovelEngine:
 
     def run_chapter_generation(self, ch_num: int) -> GraphNovelState:
         """Run nodes 4-7 and stop at the persisted chapter approval Gate."""
-        self._validate_chapter_generation_transition(ch_num)
+        self.validate_chapter_generation(ch_num)
+        self._ensure_chapter_slots()
         self.phase = GraphPhase.CHAPTER_LOOP
         self.state.workflow_phase = "chapter_loop"
         self.state.pending_gate = None
@@ -435,7 +440,8 @@ class GraphNovelEngine:
 
         return self.state
 
-    def _validate_chapter_generation_transition(self, ch_num: int) -> None:
+    def validate_chapter_generation(self, ch_num: int) -> None:
+        """Validate a chapter generation transition without mutating State."""
         if not self._is_foundation_approved():
             raise GraphExecutionError(
                 "human_approval_foundation",
@@ -455,18 +461,22 @@ class GraphNovelEngine:
                 code="invalid_transition",
             )
 
-        while len(self.state.chapters) < self.state.total_chapters:
-            number = len(self.state.chapters) + 1
-            self.state.chapters.append(
-                Chapter(chapter_number=number, title=f"第{number}章")
-            )
-
-        chapter = self.state.chapters[ch_num - 1]
-        if chapter.approval == ApprovalStatus.APPROVED:
+        if (
+            ch_num <= len(self.state.chapters)
+            and self.state.chapters[ch_num - 1].approval
+            == ApprovalStatus.APPROVED
+        ):
             raise GraphExecutionError(
                 f"human_approval_{ch_num}",
                 f"Approved chapter {ch_num} cannot be regenerated.",
                 code="invalid_transition",
+            )
+
+    def _ensure_chapter_slots(self) -> None:
+        while len(self.state.chapters) < self.state.total_chapters:
+            number = len(self.state.chapters) + 1
+            self.state.chapters.append(
+                Chapter(chapter_number=number, title=f"第{number}章")
             )
 
     @staticmethod
@@ -533,7 +543,7 @@ class GraphNovelEngine:
     # ------------------------------------------------------------------
 
     def _run_global_review(self) -> None:
-        self._validate_global_review_transition()
+        self.validate_global_review()
         self.phase = GraphPhase.GLOBAL_REVIEW
         self.state.workflow_phase = "global_review"
         self.state.last_error = {}
@@ -542,7 +552,8 @@ class GraphNovelEngine:
         self._execute_required_node("global_review", global_review.run_node)
         self.state.workflow_phase = "done"
 
-    def _validate_global_review_transition(self) -> None:
+    def validate_global_review(self) -> None:
+        """Validate the Node 9 transition without mutating State."""
         if self.state.pending_gate:
             raise GraphExecutionError(
                 self.state.pending_gate,

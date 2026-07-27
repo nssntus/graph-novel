@@ -11,9 +11,12 @@ Provides:
 
 import os
 import json
+import threading
+import uuid
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from flask import (
     Flask, render_template, request, jsonify, redirect, url_for,
@@ -31,9 +34,12 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "graph-novel-dev-secret-key")
 
-# In-memory store for running engines (one per session)
+# Process-local engine cache, task threads, and project locks.
 _engines: Dict[str, GraphNovelEngine] = {}
 _states: Dict[str, GraphNovelState] = {}
+_project_locks: Dict[str, threading.Lock] = {}
+_task_threads: Dict[str, threading.Thread] = {}
+_registry_lock = threading.Lock()
 _save_dir = Path(os.environ.get("GRAPH_NOVEL_DIR", str(Path.home() / "GraphNovel_Projects")))
 
 _save_dir.mkdir(parents=True, exist_ok=True)
@@ -100,8 +106,9 @@ def create_project():
         engine = GraphNovelEngine(state)
         engine.set_output_dir(state.save_dir / "output")
 
-        _engines[project_id] = engine
-        _states[project_id] = state
+        with _registry_lock:
+            _engines[project_id] = engine
+            _states[project_id] = state
 
         return redirect(url_for("foundation", project_id=project_id))
 
@@ -120,6 +127,11 @@ def project_dashboard(project_id: str):
         "dashboard.html",
         project_id=project_id,
         state=state,
+        approved_count=sum(
+            1
+            for chapter in state.chapters
+            if chapter.approval == ApprovalStatus.APPROVED
+        ),
     )
 
 
@@ -140,38 +152,27 @@ def foundation(project_id: str):
 
 @app.route("/api/<project_id>/run-foundation", methods=["POST"])
 def api_run_foundation(project_id: str):
-    """Run Foundation nodes 1-3 and stop at the persisted approval gate."""
+    """Start Foundation nodes 1-3 in the background."""
     engine = _get_or_create_engine(project_id)
     if not engine:
         return jsonify({"error": "Project not found"}), 404
 
-    try:
-        state = engine.run_foundation_generation()
-    except GraphExecutionError as exc:
-        state = engine.state
-        _states[project_id] = state
-        status_code = 409 if exc.code == "invalid_transition" else 422
-        return jsonify({
-            "success": False,
-            "status": (
-                "invalid_transition"
-                if exc.code == "invalid_transition"
-                else "failed"
-            ),
-            "node": exc.node_key,
-            "error": str(exc),
-        }), status_code
-
-    _states[project_id] = state
+    task, error = _start_project_task(
+        project_id=project_id,
+        engine=engine,
+        kind="foundation",
+        runner=engine.run_foundation_generation,
+        preflight=engine.validate_foundation_generation,
+    )
+    if error:
+        payload, status_code = error
+        return jsonify(payload), status_code
 
     return jsonify({
         "success": True,
-        "status": "awaiting_approval",
-        "world_setting": _serialize_dataclass(state.world_setting) if state.world_setting else None,
-        "characters": [_serialize_dataclass(c) for c in state.characters],
-        "outline": _serialize_dataclass(state.novel_outline) if state.novel_outline else None,
-        "needs_approval": True,
-    })
+        "status": "running",
+        "task": task,
+    }), 202
 
 
 @app.route("/api/<project_id>/approve-foundation", methods=["POST"])
@@ -190,8 +191,16 @@ def api_approve_foundation(project_id: str):
     if not approved and not feedback:
         return jsonify({"error": "驳回 Foundation 时请填写修改意见。"}), 400
 
+    project_lock = _get_project_lock(project_id)
+    if not project_lock.acquire(blocking=False):
+        return jsonify(_busy_payload(engine.state)), 409
+
     try:
         state = engine.apply_foundation_decision(approved, feedback)
+        _complete_decision_task(
+            state,
+            outcome="approved" if approved else "rejected",
+        )
     except GraphExecutionError as exc:
         return jsonify({
             "success": False,
@@ -199,6 +208,8 @@ def api_approve_foundation(project_id: str):
             "node": exc.node_key,
             "error": str(exc),
         }), 409
+    finally:
+        project_lock.release()
 
     _states[project_id] = state
     return jsonify({
@@ -232,47 +243,28 @@ def chapters_list(project_id: str):
 
 @app.route("/api/<project_id>/run-chapter/<int:ch_num>", methods=["POST"])
 def api_run_chapter(project_id: str, ch_num: int):
-    """Run chapter nodes 4-7 and stop at the persisted approval Gate."""
+    """Start chapter nodes 4-7 in the background."""
     engine = _get_or_create_engine(project_id)
     if not engine:
         return jsonify({"error": "Project not found"}), 404
 
-    try:
-        state = engine.run_chapter_generation(ch_num)
-    except GraphExecutionError as exc:
-        state = engine.state
-        _states[project_id] = state
-        status_code = 409 if exc.code == "invalid_transition" else 422
-        return jsonify({
-            "success": False,
-            "status": (
-                "invalid_transition"
-                if exc.code == "invalid_transition"
-                else "failed"
-            ),
-            "node": exc.node_key,
-            "error": str(exc),
-        }), status_code
+    task, error = _start_project_task(
+        project_id=project_id,
+        engine=engine,
+        kind="chapter",
+        runner=lambda: engine.run_chapter_generation(ch_num),
+        preflight=lambda: engine.validate_chapter_generation(ch_num),
+        chapter=ch_num,
+    )
+    if error:
+        payload, status_code = error
+        return jsonify(payload), status_code
 
-    _states[project_id] = state
-
-    if ch_num <= len(state.chapters):
-        ch = state.chapters[ch_num - 1]
-        return jsonify({
-            "success": True,
-            "status": "awaiting_approval",
-            "chapter": {
-                "number": ch.chapter_number,
-                "title": ch.title,
-                "word_count": ch.word_count,
-                "draft": ch.polished_draft or ch.draft,
-                "consistency_score": ch.consistency_report.get("overall_score", 0) if ch.consistency_report else 0,
-                "issues": ch.consistency_report.get("issues", []) if ch.consistency_report else [],
-                "needs_approval": True,
-            },
-        })
-
-    return jsonify({"success": False, "error": "Chapter not written"})
+    return jsonify({
+        "success": True,
+        "status": "running",
+        "task": task,
+    }), 202
 
 
 @app.route("/api/<project_id>/approve-chapter/<int:ch_num>", methods=["POST"])
@@ -291,8 +283,16 @@ def api_approve_chapter(project_id: str, ch_num: int):
     if not approved and not feedback:
         return jsonify({"error": "驳回章节时请填写修改意见。"}), 400
 
+    project_lock = _get_project_lock(project_id)
+    if not project_lock.acquire(blocking=False):
+        return jsonify(_busy_payload(engine.state)), 409
+
     try:
         state = engine.apply_chapter_decision(ch_num, approved, feedback)
+        _complete_decision_task(
+            state,
+            outcome="approved" if approved else "rejected",
+        )
     except GraphExecutionError as exc:
         return jsonify({
             "success": False,
@@ -300,6 +300,8 @@ def api_approve_chapter(project_id: str, ch_num: int):
             "node": exc.node_key,
             "error": str(exc),
         }), 409
+    finally:
+        project_lock.release()
 
     _states[project_id] = state
     if not approved:
@@ -318,34 +320,27 @@ def api_approve_chapter(project_id: str, ch_num: int):
 
 @app.route("/api/<project_id>/run-global-review", methods=["POST"])
 def api_run_global_review(project_id: str):
-    """Run the global review node."""
+    """Start Node 9 in the background."""
     engine = _get_or_create_engine(project_id)
     if not engine:
         return jsonify({"error": "Project not found"}), 404
 
-    try:
-        state = engine.run_global_review_only()
-    except GraphExecutionError as exc:
-        state = engine.state
-        _states[project_id] = state
-        status_code = 409 if exc.code == "invalid_transition" else 422
-        return jsonify({
-            "success": False,
-            "status": (
-                "invalid_transition"
-                if exc.code == "invalid_transition"
-                else "failed"
-            ),
-            "node": exc.node_key,
-            "error": str(exc),
-        }), status_code
-
-    _states[project_id] = state
+    task, error = _start_project_task(
+        project_id=project_id,
+        engine=engine,
+        kind="global_review",
+        runner=engine.run_global_review_only,
+        preflight=engine.validate_global_review,
+    )
+    if error:
+        payload, status_code = error
+        return jsonify(payload), status_code
 
     return jsonify({
         "success": True,
-        "report": state.global_review_report,
-    })
+        "status": "running",
+        "task": task,
+    }), 202
 
 
 @app.route("/project/<project_id>/review")
@@ -363,6 +358,15 @@ def global_review_page(project_id: str):
     )
 
 
+@app.route("/api/<project_id>/task-status", methods=["GET"])
+def api_task_status(project_id: str):
+    """Return the persisted execution status for one project."""
+    state = _load_or_get_state(project_id)
+    if not state:
+        return jsonify({"error": "Project not found"}), 404
+    return jsonify(_task_status_payload(state))
+
+
 @app.route("/api/<project_id>/state", methods=["GET"])
 def api_get_state(project_id: str):
     """Get the current state as JSON."""
@@ -374,6 +378,8 @@ def api_get_state(project_id: str):
         "title": state.novel_title,
         "workflow_phase": state.workflow_phase,
         "pending_gate": state.pending_gate,
+        "task_status": _task_status_payload(state)["status"],
+        "active_task": state.active_task,
         "foundation_approval": state.foundation_approval.value,
         "current_chapter": state.current_chapter,
         "total_chapters": state.total_chapters,
@@ -591,10 +597,278 @@ def download_novel(project_id: str):
 # ======================================================================
 
 
+def _get_project_lock(project_id: str) -> threading.Lock:
+    with _registry_lock:
+        lock = _project_locks.get(project_id)
+        if lock is None:
+            lock = threading.Lock()
+            _project_locks[project_id] = lock
+        return lock
+
+
+def _start_project_task(
+    project_id: str,
+    engine: GraphNovelEngine,
+    kind: str,
+    runner: Callable[[], GraphNovelState],
+    preflight: Callable[[], None],
+    chapter: Optional[int] = None,
+):
+    """Validate, persist, and start one project-scoped background task."""
+    project_lock = _get_project_lock(project_id)
+    if not project_lock.acquire(blocking=False):
+        return None, (_busy_payload(engine.state), 409)
+
+    try:
+        preflight()
+    except GraphExecutionError as exc:
+        project_lock.release()
+        return None, (_graph_error_payload(exc), 409)
+    except Exception as exc:
+        project_lock.release()
+        return None, ({
+            "success": False,
+            "status": "failed",
+            "error": str(exc),
+        }, 500)
+
+    task: Dict[str, Any] = {
+        "id": uuid.uuid4().hex,
+        "kind": kind,
+        "status": "running",
+        "started_at": datetime.now().isoformat(),
+        "finished_at": "",
+        "error": {},
+    }
+    if chapter is not None:
+        task["chapter"] = chapter
+
+    state = engine.state
+    state.active_task = task
+    try:
+        state.save()
+    except Exception as exc:
+        task["status"] = "failed"
+        task["error"] = {"code": "checkpoint_failed", "message": str(exc)}
+        project_lock.release()
+        return None, ({
+            "success": False,
+            "status": "failed",
+            "error": f"Unable to save task checkpoint: {exc}",
+        }, 500)
+
+    thread = threading.Thread(
+        target=_run_project_task,
+        args=(project_id, engine, task.copy(), runner, project_lock),
+        daemon=True,
+        name=f"graph-novel-{project_id}-{kind}",
+    )
+    with _registry_lock:
+        _task_threads[project_id] = thread
+        _states[project_id] = state
+
+    try:
+        thread.start()
+    except Exception as exc:
+        with _registry_lock:
+            _task_threads.pop(project_id, None)
+        task["status"] = "failed"
+        task["finished_at"] = datetime.now().isoformat()
+        task["error"] = {"code": "thread_start_failed", "message": str(exc)}
+        state.active_task = task
+        state.workflow_phase = "failed"
+        state.last_error = {
+            "node": kind,
+            "message": str(exc),
+            "code": "thread_start_failed",
+        }
+        state.save()
+        project_lock.release()
+        return None, ({
+            "success": False,
+            "status": "failed",
+            "error": str(exc),
+        }, 500)
+
+    return task, None
+
+
+def _run_project_task(
+    project_id: str,
+    engine: GraphNovelEngine,
+    task: Dict[str, Any],
+    runner: Callable[[], GraphNovelState],
+    project_lock: threading.Lock,
+) -> None:
+    """Execute one task and always persist its terminal status."""
+    state = engine.state
+    terminal_status = "failed"
+    task_error: Dict[str, Any] = {}
+    try:
+        state = runner()
+        terminal_status = (
+            "awaiting_approval" if state.pending_gate else "completed"
+        )
+    except GraphExecutionError as exc:
+        state = engine.state
+        task_error = {
+            "code": exc.code,
+            "node": exc.node_key,
+            "message": str(exc),
+        }
+        if not state.last_error:
+            state.last_error = {
+                "node": exc.node_key,
+                "message": str(exc),
+                "code": exc.code,
+            }
+    except Exception as exc:
+        state = engine.state
+        state.workflow_phase = "failed"
+        state.pending_gate = None
+        state.last_error = {
+            "node": task["kind"],
+            "message": str(exc),
+            "code": "task_failed",
+        }
+        task_error = {
+            "code": "task_failed",
+            "node": task["kind"],
+            "message": str(exc),
+        }
+    finally:
+        task["status"] = terminal_status
+        task["finished_at"] = datetime.now().isoformat()
+        task["error"] = task_error
+        if terminal_status == "awaiting_approval":
+            task["pending_gate"] = state.pending_gate
+        state.active_task = task
+        try:
+            state.save()
+        except Exception as exc:
+            state.log(f"Task checkpoint save failed: {exc}")
+        with _registry_lock:
+            _states[project_id] = state
+            current = _task_threads.get(project_id)
+            if current is threading.current_thread():
+                _task_threads.pop(project_id, None)
+        project_lock.release()
+
+
+def _complete_decision_task(
+    state: GraphNovelState,
+    outcome: str,
+) -> None:
+    task = dict(state.active_task)
+    if not task:
+        task = {
+            "id": uuid.uuid4().hex,
+            "kind": "decision",
+            "started_at": datetime.now().isoformat(),
+        }
+    task["status"] = "completed"
+    task["outcome"] = outcome
+    task["decision_at"] = datetime.now().isoformat()
+    task["error"] = {}
+    task.pop("pending_gate", None)
+    state.active_task = task
+    state.save()
+
+
+def _busy_payload(state: GraphNovelState) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "status": "busy",
+        "error": "该项目已有任务正在运行，请等待当前任务完成。",
+        "task": state.active_task,
+    }
+
+
+def _graph_error_payload(exc: GraphExecutionError) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "status": "invalid_transition",
+        "node": exc.node_key,
+        "error": str(exc),
+    }
+
+
+def _task_status_payload(state: GraphNovelState) -> Dict[str, Any]:
+    task = dict(state.active_task)
+    task_status = task.get("status")
+    if task_status == "running":
+        status = "running"
+    elif state.pending_gate:
+        status = "awaiting_approval"
+    elif task_status == "failed" or state.workflow_phase == "failed":
+        status = "failed"
+    elif task_status == "completed" or state.workflow_phase == "done":
+        status = "completed"
+    else:
+        status = "idle"
+
+    current_node = ""
+    if status == "failed":
+        current_node = state.last_error.get("node", "")
+    elif status == "awaiting_approval":
+        current_node = state.pending_gate or ""
+    elif status == "running":
+        in_progress = [
+            key
+            for key, node_status in state.node_status.items()
+            if node_status == NodeStatus.IN_PROGRESS
+        ]
+        current_node = in_progress[-1] if in_progress else task.get("kind", "")
+
+    return {
+        "success": True,
+        "status": status,
+        "task": task,
+        "workflow_phase": state.workflow_phase,
+        "pending_gate": state.pending_gate,
+        "current_node": current_node,
+        "last_error": state.last_error,
+    }
+
+
+def _recover_interrupted_task(state: GraphNovelState) -> None:
+    """Normalize a persisted task that has no surviving worker thread."""
+    task = dict(state.active_task)
+    status = task.get("status")
+    if status == "running":
+        task["finished_at"] = datetime.now().isoformat()
+        if state.pending_gate:
+            task["status"] = "awaiting_approval"
+            task["pending_gate"] = state.pending_gate
+            task["error"] = {}
+        elif state.workflow_phase == "done":
+            task["status"] = "completed"
+            task["error"] = {}
+        else:
+            error = {
+                "code": "interrupted",
+                "node": task.get("kind", "task"),
+                "message": "服务重启导致后台任务中断，请重新运行。",
+            }
+            task["status"] = "failed"
+            task["error"] = error
+            state.workflow_phase = "failed"
+            state.last_error = error
+    elif status == "awaiting_approval" and not state.pending_gate:
+        task["status"] = "completed"
+        task["decision_at"] = datetime.now().isoformat()
+
+    if task != state.active_task:
+        state.active_task = task
+        state.save()
+
+
 def _load_or_get_state(project_id: str) -> Optional[GraphNovelState]:
     """Load state from memory or disk."""
-    if project_id in _states:
-        return _states[project_id]
+    with _registry_lock:
+        cached = _states.get(project_id)
+    if cached is not None:
+        return cached
 
     project_dir = _save_dir / project_id
     state_paths = (
@@ -606,16 +880,20 @@ def _load_or_get_state(project_id: str) -> Optional[GraphNovelState]:
             state = GraphNovelState.from_json(state_path)
             if not state.project_id:
                 state.project_id = project_id
-            _states[project_id] = state
-            return state
+            _recover_interrupted_task(state)
+            with _registry_lock:
+                existing = _states.setdefault(project_id, state)
+            return existing
 
     return None
 
 
 def _get_or_create_engine(project_id: str) -> Optional[GraphNovelEngine]:
     """Get engine from memory or create from saved state."""
-    if project_id in _engines:
-        return _engines[project_id]
+    with _registry_lock:
+        cached = _engines.get(project_id)
+    if cached is not None:
+        return cached
 
     state = _load_or_get_state(project_id)
     if not state:
@@ -623,8 +901,9 @@ def _get_or_create_engine(project_id: str) -> Optional[GraphNovelEngine]:
 
     engine = GraphNovelEngine(state)
     engine.set_output_dir(state.save_dir / "output")
-    _engines[project_id] = engine
-    return engine
+    with _registry_lock:
+        existing = _engines.setdefault(project_id, engine)
+    return existing
 
 
 def _list_projects() -> List[dict]:

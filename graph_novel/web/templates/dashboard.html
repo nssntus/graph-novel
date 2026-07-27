@@ -25,6 +25,7 @@
       <a href="/download/{{ project_id }}/novel" class="btn btn-sm">下载 .md</a>
     </div>
   </div>
+  <div id="project-task-status" class="mb-2"></div>
 
   {% if state.novel_outline %}
   <div class="card mb-2">
@@ -49,7 +50,7 @@
     <div class="card text-center">
       <h3>已写章节</h3>
       <p style="font-size: 2rem; color: var(--accent);">
-        {% set written = state.chapters|selectattr('polished_draft')|list|length %}
+        {% set written = approved_count %}
         {{ written }}
       </p>
       <p class="muted">/ {{ state.total_chapters }} 章</p>
@@ -129,6 +130,34 @@
     {% endif %}
   </div>
 </div>
+<script src="/static/task.js"></script>
+<script>
+const projectId = "{{ project_id }}";
+
+async function resumeDashboardTask() {
+  const banner = document.getElementById('project-task-status');
+  try {
+    const payload = await fetchProjectTask(projectId);
+    renderProjectTaskStatus(banner, payload);
+    if (payload.status === 'running') {
+      const terminal = await waitForProjectTask(
+        projectId,
+        payload.task.id,
+        function(update) {
+          renderProjectTaskStatus(banner, update);
+        }
+      );
+      renderProjectTaskStatus(banner, terminal);
+      location.reload();
+    }
+  } catch (err) {
+    banner.innerHTML =
+      '<p class="alert alert-error">状态读取失败：' + err.message + '</p>';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', resumeDashboardTask);
+</script>
 <script src="/static/chat.js"></script>
 </body>
 </html>

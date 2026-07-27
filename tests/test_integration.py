@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -119,6 +120,23 @@ def make_sample_state() -> GraphNovelState:
     }
 
     return state
+
+
+def wait_for_task_status(client, project_id, expected, timeout=3.0):
+    """Poll the Web task endpoint until it reaches one expected status."""
+    expected_statuses = {expected} if isinstance(expected, str) else set(expected)
+    deadline = time.monotonic() + timeout
+    last_payload = {}
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/{project_id}/task-status")
+        assert response.status_code == 200
+        last_payload = response.get_json()
+        if last_payload["status"] in expected_statuses:
+            return last_payload
+        time.sleep(0.01)
+    raise AssertionError(
+        f"Task did not reach {sorted(expected_statuses)}: {last_payload}"
+    )
 
 
 # ======================================================================
@@ -431,12 +449,11 @@ def test_global_review_guards_and_failure():
              return_value="not-json",
          ):
         response = client.post(f"/api/{project_id}/run-global-review")
-        payload = response.get_json()
+        assert response.status_code == 202
+        payload = wait_for_task_status(client, project_id, "failed")
 
-    assert response.status_code == 422
-    assert payload["success"] is False
     assert payload["status"] == "failed"
-    assert payload["node"] == "global_review"
+    assert payload["current_node"] == "global_review"
     assert state.workflow_phase == "failed"
     assert state.node_status["global_review"] == NodeStatus.FAILED
     assert state.last_error["node"] == "global_review"
@@ -759,6 +776,7 @@ def test_project_inputs_and_legacy_state_migration():
         "project_id", "creative_genre", "creative_premise", "creative_theme",
         "target_total_chapters", "workflow_phase", "pending_gate",
         "foundation_approval", "foundation_feedback", "last_error",
+        "active_task",
     ):
         legacy_data.pop(key, None)
     legacy_data["version"] = 1
@@ -766,7 +784,7 @@ def test_project_inputs_and_legacy_state_migration():
     legacy_path.write_text(json.dumps(legacy_data, ensure_ascii=False), encoding="utf-8")
 
     loaded = GraphNovelState.from_json(legacy_path)
-    assert loaded.version == 3
+    assert loaded.version == 4
     assert loaded.target_total_chapters == loaded.total_chapters
     assert loaded.foundation_approval == ApprovalStatus.APPROVED
     assert loaded.workflow_phase == "chapter_loop"
@@ -783,7 +801,7 @@ def test_project_inputs_and_legacy_state_migration():
     )
 
     migrated = GraphNovelState.from_json(version_two_path)
-    assert migrated.version == 3
+    assert migrated.version == 4
     assert migrated.chapters[0].side_effects_committed
     assert migrated.pending_gate == "chapter:2"
     print("✓ PASSED")
@@ -812,11 +830,20 @@ def test_foundation_web_api_contract():
          mock.patch("graph_novel.nodes.world_building.call_llm_sync", return_value=world), \
          mock.patch("graph_novel.nodes.character_design.call_llm_sync", return_value=characters), \
          mock.patch("graph_novel.nodes.outline_planning.call_llm_sync", return_value=outline):
+        assert client.get(
+            f"/api/{project_id}/task-status"
+        ).get_json()["status"] == "idle"
         response = client.post(f"/api/{project_id}/run-foundation")
         payload = response.get_json()
-        assert response.status_code == 200
+        assert response.status_code == 202
         assert payload["success"] is True
-        assert payload["status"] == "awaiting_approval"
+        assert payload["status"] == "running"
+        payload = wait_for_task_status(
+            client,
+            project_id,
+            "awaiting_approval",
+        )
+        assert payload["pending_gate"] == "foundation"
 
         response = client.post(
             f"/api/{project_id}/approve-foundation",
@@ -832,13 +859,17 @@ def test_foundation_web_api_contract():
         assert response.status_code == 200
         assert payload["next_action"] == "regenerate_foundation"
         assert state.foundation_feedback == "加强规则压迫感"
+        assert client.get(
+            f"/api/{project_id}/task-status"
+        ).get_json()["status"] == "completed"
 
         page = client.get(f"/project/{project_id}/foundation")
         assert page.status_code == 200
         assert "加强规则压迫感" in page.get_data(as_text=True)
 
         response = client.post(f"/api/{project_id}/run-foundation")
-        assert response.status_code == 200
+        assert response.status_code == 202
+        wait_for_task_status(client, project_id, "awaiting_approval")
         response = client.post(
             f"/api/{project_id}/approve-foundation",
             json={"approved": True, "feedback": ""},
@@ -848,6 +879,9 @@ def test_foundation_web_api_contract():
         assert payload["next_action"] == "chapters"
         assert state.foundation_approval == ApprovalStatus.APPROVED
         assert len(state.chapters) == 2
+        assert client.get(
+            f"/api/{project_id}/task-status"
+        ).get_json()["status"] == "completed"
         project_summary = next(
             project for project in _list_projects()
             if project["id"] == project_id
@@ -867,11 +901,10 @@ def test_foundation_web_api_contract():
     with flask_app.test_client() as client, \
          mock.patch("graph_novel.nodes.world_building.call_llm_sync", return_value="not-json"):
         response = client.post(f"/api/{failure_id}/run-foundation")
-        payload = response.get_json()
-        assert response.status_code == 422
-        assert payload["success"] is False
+        assert response.status_code == 202
+        payload = wait_for_task_status(client, failure_id, "failed")
         assert payload["status"] == "failed"
-        assert payload["node"] == "world_building"
+        assert payload["current_node"] == "world_building"
 
     print("✓ PASSED")
 
@@ -1019,9 +1052,15 @@ def test_chapter_web_api_contract():
          mock.patch("graph_novel.nodes.style_polish.call_llm_sync", return_value=polish):
         response = client.post(f"/api/{project_id}/run-chapter/1")
         payload = response.get_json()
-        assert response.status_code == 200
+        assert response.status_code == 202
         assert payload["success"] is True
-        assert payload["status"] == "awaiting_approval"
+        assert payload["status"] == "running"
+        payload = wait_for_task_status(
+            client,
+            project_id,
+            "awaiting_approval",
+        )
+        assert payload["pending_gate"] == "chapter:1"
 
         response = client.post(
             f"/api/{project_id}/approve-chapter/1",
@@ -1038,7 +1077,8 @@ def test_chapter_web_api_contract():
         assert payload["next_action"] == "rewrite_chapter"
 
         response = client.post(f"/api/{project_id}/run-chapter/1")
-        assert response.status_code == 200
+        assert response.status_code == 202
+        wait_for_task_status(client, project_id, "awaiting_approval")
         response = client.post(
             f"/api/{project_id}/approve-chapter/1",
             json={"approved": True, "feedback": ""},
@@ -1047,7 +1087,113 @@ def test_chapter_web_api_contract():
         assert response.status_code == 200
         assert payload["status"] == "approved"
         assert state.chapters[0].side_effects_committed
+        assert client.get(
+            f"/api/{project_id}/task-status"
+        ).get_json()["status"] == "completed"
 
+    print("✓ PASSED")
+
+
+def test_web_task_lock_and_restart_recovery():
+    """One project runs one task; orphaned running tasks recover safely."""
+    print("  Testing Web task lock + restart recovery...", end=" ")
+    from graph_novel.web.app import (
+        app as flask_app,
+        _engines,
+        _load_or_get_state,
+        _states,
+        _task_threads,
+    )
+
+    project_id = "web_task_lock"
+    state = GraphNovelState(
+        project_id=project_id,
+        novel_title="Task Lock",
+        save_dir=TEST_PROJECTS_DIR / project_id,
+        target_total_chapters=2,
+        total_chapters=2,
+    )
+    state.save()
+    _states[project_id] = state
+    _engines.pop(project_id, None)
+    world, characters, outline = _foundation_llm_mocks(chapter_count=2)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_world(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=2.0)
+        return world
+
+    with flask_app.test_client() as client, \
+         mock.patch(
+             "graph_novel.nodes.world_building.call_llm_sync",
+             side_effect=blocking_world,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.character_design.call_llm_sync",
+             return_value=characters,
+         ), \
+         mock.patch(
+             "graph_novel.nodes.outline_planning.call_llm_sync",
+             return_value=outline,
+         ):
+        response = client.post(f"/api/{project_id}/run-foundation")
+        assert response.status_code == 202
+        assert entered.wait(timeout=1.0)
+
+        running = client.get(
+            f"/api/{project_id}/task-status"
+        ).get_json()
+        assert running["status"] == "running"
+        assert running["task"]["kind"] == "foundation"
+
+        conflict = client.post(f"/api/{project_id}/run-foundation")
+        assert conflict.status_code == 409
+        assert conflict.get_json()["status"] == "busy"
+
+        blocked_decision = client.post(
+            f"/api/{project_id}/approve-foundation",
+            json={"approved": False, "feedback": "等待当前任务"},
+        )
+        assert blocked_decision.status_code == 409
+        assert blocked_decision.get_json()["status"] == "busy"
+
+        release.set()
+        completed = wait_for_task_status(
+            client,
+            project_id,
+            "awaiting_approval",
+        )
+        assert completed["pending_gate"] == "foundation"
+        deadline = time.monotonic() + 1.0
+        while project_id in _task_threads and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert project_id not in _task_threads
+
+    interrupted_id = "web_task_interrupted"
+    interrupted = GraphNovelState(
+        project_id=interrupted_id,
+        novel_title="Interrupted Task",
+        save_dir=TEST_PROJECTS_DIR / interrupted_id,
+        target_total_chapters=2,
+        total_chapters=2,
+        active_task={
+            "id": "orphan-task",
+            "kind": "foundation",
+            "status": "running",
+            "started_at": "2026-07-27T00:00:00",
+        },
+    )
+    interrupted.save()
+    _states.pop(interrupted_id, None)
+    _engines.pop(interrupted_id, None)
+
+    recovered = _load_or_get_state(interrupted_id)
+    assert recovered is not None
+    assert recovered.active_task["status"] == "failed"
+    assert recovered.active_task["error"]["code"] == "interrupted"
+    assert recovered.workflow_phase == "failed"
     print("✓ PASSED")
 
 
@@ -1077,6 +1223,7 @@ def run_all_tests():
         test_chapter_gate_feedback_and_side_effect_commit,
         test_chapter_failure_stops_before_gate,
         test_chapter_web_api_contract,
+        test_web_task_lock_and_restart_recovery,
     ]
 
     passed = 0

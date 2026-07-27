@@ -36,6 +36,7 @@
   </div>
 
   <p class="muted mb-2">🍅 Phase 1：Foundation 阶段构建世界观、角色阵容和金手指设定、爽点排期大纲。此阶段需要你审批后才能开始逐章写作。</p>
+  <div id="project-task-status" class="mb-2"></div>
 
   <!-- Generate Foundation Button -->
   <div id="generate-section" class="card text-center" style="padding: 2rem; {% if has_foundation and foundation_status != 'rejected' %}display:none{% endif %}">
@@ -161,36 +162,74 @@
   </div>
 </div>
 
+<script src="/static/task.js"></script>
 <script>
 const projectId = "{{ project_id }}";
 
-async function generateFoundation() {
+function setFoundationRunning(running) {
   const btn = document.getElementById('generate-btn');
   const spinner = document.getElementById('generate-spinner');
+  if (btn) btn.disabled = running;
+  if (spinner) spinner.style.display = running ? 'inline-block' : 'none';
+}
+
+async function monitorFoundationTask(taskId) {
+  const status = document.getElementById('generate-status');
+  const banner = document.getElementById('project-task-status');
+  const terminal = await waitForProjectTask(projectId, taskId, function(payload) {
+    renderProjectTaskStatus(banner, payload);
+    if (payload.status === 'running') {
+      status.innerHTML = '<p class="muted">后台任务运行中，当前节点：'
+        + (payload.current_node || '初始化') + '</p>';
+    }
+  });
+
+  renderProjectTaskStatus(banner, terminal);
+  if (terminal.status === 'awaiting_approval' || terminal.status === 'completed') {
+    status.innerHTML = '<p class="alert alert-success">Foundation 任务已完成，正在刷新审批状态……</p>';
+    location.reload();
+    return true;
+  }
+  setFoundationRunning(false);
+  return false;
+}
+
+async function generateFoundation() {
   const status = document.getElementById('generate-status');
 
-  btn.disabled = true;
-  spinner.style.display = 'inline-block';
-  status.innerHTML = '<p class="muted">正在运行 AI Agent：世界观构建、人物设计（含金手指）、爽点大纲规划……</p>';
+  setFoundationRunning(true);
+  status.innerHTML = '<p class="muted">正在启动 Foundation 后台任务……</p>';
 
   try {
     const resp = await fetch(`/api/${projectId}/run-foundation`, { method: 'POST' });
     const data = await resp.json();
 
-    if (data.success) {
-      status.innerHTML = '<p class="alert alert-success">Foundation 已生成！请在下方审阅。</p>';
-      document.getElementById('generate-section').style.display = 'none';
-      document.getElementById('foundation-results').style.display = 'block';
-      location.reload();
+    if (resp.status === 202 && data.success) {
+      await monitorFoundationTask(data.task.id);
     } else {
-      status.innerHTML = `<p class="alert alert-error">Error: ${data.error || 'Unknown error'}</p>`;
-      btn.disabled = false;
-      spinner.style.display = 'none';
+      status.innerHTML = `<p class="alert alert-error">启动失败：${data.error || '未知错误'}</p>`;
+      setFoundationRunning(false);
     }
   } catch (err) {
-    status.innerHTML = `<p class="alert alert-error">Connection error: ${err.message}</p>`;
-    btn.disabled = false;
-    spinner.style.display = 'none';
+    status.innerHTML = `<p class="alert alert-error">连接错误：${err.message}</p>`;
+    setFoundationRunning(false);
+  }
+}
+
+async function resumeFoundationTask() {
+  try {
+    const payload = await fetchProjectTask(projectId);
+    renderProjectTaskStatus(
+      document.getElementById('project-task-status'),
+      payload
+    );
+    if (payload.status === 'running') {
+      setFoundationRunning(true);
+      await monitorFoundationTask(payload.task.id);
+    }
+  } catch (err) {
+    document.getElementById('project-task-status').innerHTML =
+      `<p class="alert alert-error">状态读取失败：${err.message}</p>`;
   }
 }
 
@@ -223,6 +262,8 @@ async function approveFoundation(approved) {
     status.innerHTML = `<p class="alert alert-error">Error: ${err.message}</p>`;
   }
 }
+
+document.addEventListener('DOMContentLoaded', resumeFoundationTask);
 </script>
 <script src="/static/chat.js"></script>
 </body>

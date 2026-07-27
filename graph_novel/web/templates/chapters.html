@@ -30,6 +30,7 @@
     <div class="progress-fill" style="width: {{ pct }}%"></div>
   </div>
   {% endif %}
+  <div id="project-task-status" class="mt-2"></div>
 
   <!-- Chapter Grid -->
   <div class="grid grid-3 mt-2">
@@ -76,7 +77,7 @@
               审批
             </button>
           {% else %}
-            <button class="btn btn-primary btn-sm" onclick="runChapter({{ ch_num }})">
+            <button class="btn btn-primary btn-sm chapter-run-btn" onclick="runChapter({{ ch_num }})">
               {{ "按反馈重写" if ch and ch.approval.value == "rejected" else "写这章" }}
             </button>
           {% endif %}
@@ -130,48 +131,84 @@
   </div>
 </div>
 
+<script src="/static/task.js"></script>
 <script>
 const projectId = "{{ project_id }}";
 let currentViewChapter = 0;
 
+function setChapterRunning(running) {
+  document.querySelectorAll('.chapter-run-btn').forEach(function(button) {
+    button.disabled = running;
+  });
+  const runAllButton = document.getElementById('run-all-btn');
+  if (runAllButton) runAllButton.disabled = running;
+}
+
+async function monitorChapterTask(taskId, chNum) {
+  const banner = document.getElementById('project-task-status');
+  const status = chNum
+    ? document.getElementById('chapter-status-' + chNum)
+    : document.getElementById('run-all-status');
+  const terminal = await waitForProjectTask(projectId, taskId, function(payload) {
+    renderProjectTaskStatus(banner, payload);
+    if (status && payload.status === 'running') {
+      status.innerHTML = '<p class="muted">当前节点：'
+        + (payload.current_node || '初始化') + '</p>';
+    }
+  });
+
+  renderProjectTaskStatus(banner, terminal);
+  if (terminal.status === 'awaiting_approval' || terminal.status === 'completed') {
+    if (status) {
+      status.innerHTML = '<p class="alert alert-success">后台任务已完成，正在刷新页面……</p>';
+    }
+    location.reload();
+    return true;
+  }
+  setChapterRunning(false);
+  return false;
+}
+
 async function runChapter(chNum) {
   const status = document.getElementById(`chapter-status-${chNum}`);
-  status.innerHTML = '<span class="spinner"></span> <span class="muted">正在写第' + chNum + '章……</span>';
+  setChapterRunning(true);
+  status.innerHTML = '<span class="spinner"></span> <span class="muted">正在启动第' + chNum + '章后台任务……</span>';
 
   try {
     const resp = await fetch(`/api/${projectId}/run-chapter/${chNum}`, { method: 'POST' });
     const data = await resp.json();
 
-    if (data.success && data.chapter) {
-      const wc = data.chapter.word_count || 0;
-      const score = data.chapter.consistency_score || '?';
-      status.innerHTML = '<p class="alert alert-success">完成（' + wc + '字）| 审稿' + score + '/10</p>';
-      currentViewChapter = chNum;
-      document.getElementById('modal-title').textContent = '第' + chNum + '章：' + (data.chapter.title || '');
-      document.getElementById('modal-meta').textContent = wc + '字 | 审稿' + score + '/10';
-      document.getElementById('modal-content').innerHTML = formatProse(data.chapter.draft);
-      document.getElementById('modal-approval').style.display = 'block';
-      document.getElementById('chapter-modal').style.display = 'block';
-
-      const card = document.getElementById('chapter-card-' + chNum);
-      const badge = card.querySelector('.badge');
-      if (badge) {
-        badge.textContent = '待审批';
-        badge.className = 'badge badge-in-progress';
-      }
-      const action = card.querySelector('button');
-      if (action) {
-        action.textContent = '审批';
-        action.onclick = function(){ viewChapter(chNum); };
-      }
-      return true;
+    if (resp.status === 202 && data.success) {
+      return await monitorChapterTask(data.task.id, chNum);
     } else {
-      status.innerHTML = '<p class="alert alert-error">失败：' + (data.error || '未知错误') + '</p>';
+      status.innerHTML = '<p class="alert alert-error">启动失败：' + (data.error || '未知错误') + '</p>';
+      setChapterRunning(false);
       return false;
     }
   } catch (err) {
     status.innerHTML = '<p class="alert alert-error">连接错误：' + err.message + '</p>';
+    setChapterRunning(false);
     return false;
+  }
+}
+
+async function resumeChapterTask() {
+  try {
+    const payload = await fetchProjectTask(projectId);
+    renderProjectTaskStatus(
+      document.getElementById('project-task-status'),
+      payload
+    );
+    if (payload.status === 'running') {
+      setChapterRunning(true);
+      const chapter = payload.task.kind === 'chapter'
+        ? payload.task.chapter
+        : null;
+      await monitorChapterTask(payload.task.id, chapter);
+    }
+  } catch (err) {
+    document.getElementById('project-task-status').innerHTML =
+      '<p class="alert alert-error">状态读取失败：' + err.message + '</p>';
   }
 }
 
@@ -258,6 +295,8 @@ function formatProse(text) {
     })
     .join('');
 }
+
+document.addEventListener('DOMContentLoaded', resumeChapterTask);
 </script>
 <script src="/static/chat.js"></script>
 </body>

@@ -20,8 +20,9 @@
 <div class="container">
   <h2 style="font-weight: normal; font-size: 1.5rem; margin-bottom: 1rem;">{{ state.novel_title }} — 全局终审</h2>
   <p class="muted mb-2">🍅 Phase 3：全局审查——爽点节奏、角色弧线完整度、章末钩子质量、算法适配评估、平台竞争力分析</p>
+  <div id="project-task-status" class="mb-2"></div>
 
-  {% if not state.global_review_report %}
+  {% if not state.global_review_report or state.global_review_report.get('error') %}
   <div class="card text-center" style="padding: 2rem;">
     <h3>运行全局终审</h3>
     <p class="muted mb-2">分析全书：黄金三章达标度、爽点密度、钩子质量、角色弧线、AI病残留、算法适配</p>
@@ -143,33 +144,75 @@
   {% endif %}
 </div>
 
+<script src="/static/task.js"></script>
 <script>
 const projectId = "{{ project_id }}";
 
-async function runGlobalReview() {
+function setReviewRunning(running) {
   const btn = document.getElementById('review-btn');
   const spinner = document.getElementById('review-spinner');
+  if (btn) btn.disabled = running;
+  if (spinner) spinner.style.display = running ? 'inline-block' : 'none';
+}
+
+async function monitorReviewTask(taskId) {
   const status = document.getElementById('review-status');
-  btn.disabled = true;
-  spinner.style.display = 'inline-block';
-  status.innerHTML = '<p class="muted">正在运行全局终审 Agent……</p>';
+  const banner = document.getElementById('project-task-status');
+  const terminal = await waitForProjectTask(projectId, taskId, function(payload) {
+    renderProjectTaskStatus(banner, payload);
+    if (payload.status === 'running') {
+      status.innerHTML = '<p class="muted">全局终审运行中，当前节点：'
+        + (payload.current_node || 'global_review') + '</p>';
+    }
+  });
+
+  renderProjectTaskStatus(banner, terminal);
+  if (terminal.status === 'completed') {
+    status.innerHTML = '<p class="alert alert-success">终审完成，正在刷新报告……</p>';
+    location.reload();
+    return true;
+  }
+  setReviewRunning(false);
+  return false;
+}
+
+async function runGlobalReview() {
+  const status = document.getElementById('review-status');
+  setReviewRunning(true);
+  status.innerHTML = '<p class="muted">正在启动全局终审后台任务……</p>';
   try {
     const resp = await fetch('/api/' + projectId + '/run-global-review', { method: 'POST' });
     const data = await resp.json();
-    if (data.success) {
-      status.innerHTML = '<p class="alert alert-success">终审完成！刷新中……</p>';
-      setTimeout(function(){ location.reload(); }, 1000);
+    if (resp.status === 202 && data.success) {
+      await monitorReviewTask(data.task.id);
     } else {
-      status.innerHTML = '<p class="alert alert-error">错误：' + (data.error || '失败') + '</p>';
-      btn.disabled = false;
-      spinner.style.display = 'none';
+      status.innerHTML = '<p class="alert alert-error">启动失败：' + (data.error || '失败') + '</p>';
+      setReviewRunning(false);
     }
   } catch (err) {
     status.innerHTML = '<p class="alert alert-error">连接错误：' + err.message + '</p>';
-    btn.disabled = false;
-    spinner.style.display = 'none';
+    setReviewRunning(false);
   }
 }
+
+async function resumeReviewTask() {
+  try {
+    const payload = await fetchProjectTask(projectId);
+    renderProjectTaskStatus(
+      document.getElementById('project-task-status'),
+      payload
+    );
+    if (payload.status === 'running') {
+      setReviewRunning(true);
+      await monitorReviewTask(payload.task.id);
+    }
+  } catch (err) {
+    document.getElementById('project-task-status').innerHTML =
+      '<p class="alert alert-error">状态读取失败：' + err.message + '</p>';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', resumeReviewTask);
 </script>
 <script src="/static/chat.js"></script>
 </body>
