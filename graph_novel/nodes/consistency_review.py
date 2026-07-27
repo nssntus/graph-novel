@@ -3,12 +3,15 @@ Node 6: 一致性审查 Agent
 针对番茄小说：检查 OOC、逻辑漏洞、AI写作病、爽点兑现、节奏问题。
 """
 
+import json
+
 from graph_novel.state import GraphNovelState, NodeStatus, ArcStage
 from graph_novel.llm import call_llm_sync
 from graph_novel.output_contracts import (
     CONSISTENCY_REVIEW_CONTRACT,
     call_json_with_contract_sync,
 )
+from graph_novel.narrative import build_narrative_context
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的"毒舌主编"，拥有15年网文审稿经验。你的任务是用挑剔的眼光审查章节，找出所有问题。
 
@@ -41,7 +44,10 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的"毒舌主编"，拥有15年
    - 对话比例是否够高（应占60%以上）？
 
 6. 逻辑与节奏：
-   - 事件是否合理推进？
+   - 每个关键事件是否有充分前因？
+   - 角色获得信息时是否有目击、转述、推理、公开传播或文档来源？
+   - 是否把“怀疑/推断”无铺垫写成“确认”？
+   - 时间、位置、伤势、资源和能力变化是否与已批准状态一致？
    - 有没有注水段落？
 
 输出 JSON：
@@ -62,11 +68,28 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的"毒舌主编"，拥有15年
   "ai_disease_count": AI病检测到的数量,
   "dialogue_ratio_estimate": "估计对话占比",
   "requires_rewrite": true/false,
+  "logic_gate_passed": true/false,
+  "narrative_audit": {
+    "causality": "逐项核对本章关键事件是否满足 causal_chain",
+    "knowledge_provenance": "逐个核对角色新增认知是否有可靠来源",
+    "continuity": "核对时间、位置、伤势、资源和能力变化"
+  },
+  "narrative_violations": [
+    {
+      "severity": "致命" | "严重" | "轻微",
+      "category": "因果断裂" | "信息越权" | "时间" | "位置" | "资源" | "伤势" | "能力" | "其他",
+      "description": "违反了什么叙事事实",
+      "evidence": "正文证据及缺失的前置条件",
+      "suggested_fix": "补铺垫、降级认知或调整事件的具体方法"
+    }
+  ],
   "character_arc_updates": {"角色名": "新弧线阶段"},
   "summary": "总体评价（2-3句）"
 }
 
 如果评分低于6分，requires_rewrite 应为 true。
+存在任何“致命/严重”的 narrative_violations 时，
+logic_gate_passed 必须为 false，requires_rewrite 必须为 true。
 请只输出 JSON。"""
 
 
@@ -84,6 +107,13 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     character_text = _character_context(state)
     prev_text = _prev_summary(state)
     fs_text = _foreshadowing_status(state)
+    narrative_context = build_narrative_context(state)
+    plan_text = json.dumps(chapter.plan, ensure_ascii=False, indent=2)
+    delta_text = json.dumps(
+        chapter.narrative_delta,
+        ensure_ascii=False,
+        indent=2,
+    )
 
     user_prompt = f"""审查第{ch_num}章。
 
@@ -95,6 +125,15 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 角色：{character_text}
 前文：{prev_text}
 伏笔：{fs_text}
+
+== 已批准的叙事事实、角色认知与连续性状态 ==
+{narrative_context}
+
+== 本章因果计划 ==
+{plan_text}
+
+== 本章候选状态变化 ==
+{delta_text}
 
 请从毒舌主编视角严格审查，输出 JSON 报告。"""
 

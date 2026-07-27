@@ -3,6 +3,8 @@ Node 7: 风格润色 Agent
 针对番茄小说：优化网感、消除AI味、强化爽点表达、适配手机阅读。
 """
 
+import json
+
 from graph_novel.state import GraphNovelState, NodeStatus
 from graph_novel.llm import call_llm_sync
 from graph_novel.output_contracts import (
@@ -40,6 +42,10 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的文字润色师。你专门�
    - 确保钩子有力、有悬念
    - 钩子不要解释，要留白
 
+剧情事实保护：
+- 不得新增、删除或改变事件、角色认知、时间、位置、伤势、资源和能力
+- 不得把“怀疑/推断”润色成“确认”
+
 润色后完整输出正文。如有编辑建议，放在 "---编辑建议---" 分隔符后（可选）。
 只输出润色后的正文。"""
 
@@ -63,9 +69,28 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
             for i in ai_issues[:3]:
                 consistency_notes += f"- {i.get('description', '')[:100]}\n"
 
+    narrative_constraints = json.dumps({
+        "causal_chain": chapter.plan.get("causal_chain", []),
+        "facts_established": chapter.narrative_delta.get(
+            "facts_established",
+            [],
+        ),
+        "knowledge_changes": chapter.narrative_delta.get(
+            "knowledge_changes",
+            [],
+        ),
+        "continuity_changes": chapter.narrative_delta.get(
+            "continuity_changes",
+            {},
+        ),
+    }, ensure_ascii=False, indent=2)
+
     user_prompt = f"""润色以下章节的文字。
 
 {consistency_notes}
+
+以下叙事约束不可更改：
+{narrative_constraints}
 
 == 第{ch_num}章：{chapter.title}（{chapter.word_count}字）==
 {chapter.draft[:12000]}

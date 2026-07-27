@@ -3,11 +3,18 @@ Node 5: 章节写作 Agent
 针对番茄小说平台：2000-2500字/章，对话驱动，手机阅读适配，章末强钩子。
 """
 
+import json
+
 from graph_novel.state import GraphNovelState, NodeStatus, Foreshadowing
 from graph_novel.llm import call_llm_sync
 from graph_novel.output_contracts import (
     call_text_with_contract_sync,
     parse_chapter_response,
+)
+from graph_novel.narrative import (
+    build_narrative_context,
+    commit_narrative_delta,
+    validate_narrative_delta,
 )
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的签约作者。你写快节奏爽文，擅长制造爽点和钩子。
@@ -52,9 +59,27 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的签约作者。你写快节�
   "shuangdian_beat": "小爽点/大爽点/铺垫",
   "foreshadowing_planted": [{"description": "", "scene_context": ""}],
   "foreshadowing_paid": [{"id": "", "how_it_was_resolved": ""}],
-  "character_moments": {"角色名": "本章弧线节拍"}
+  "character_moments": {"角色名": "本章弧线节拍"},
+  "chapter_summary": "只记录本章实际发生的关键事实，不写文学评价",
+  "facts_established": [{"fact_id": "", "statement": "", "category": "", "visibility": ""}],
+  "knowledge_changes": [{
+    "fact_id": "",
+    "character": "",
+    "knowledge_level": "heard/suspected/inferred/confirmed",
+    "source_type": "observed/told/inferred/public/document",
+    "source_character": "",
+    "evidence": "正文中的信息来源"
+  }],
+  "continuity_changes": {
+    "time": "",
+    "character_locations": {},
+    "character_conditions": {},
+    "resources": {}
+  }
 }
 
+facts_established 和 knowledge_changes 只能记录章节规划中已经声明的变化。
+角色不能凭空获得信息，也不能把怀疑直接写成确认。
 请写出完整的章节正文（2000-2500字），然后附上 META 数据。"""
 
 
@@ -68,16 +93,19 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     character_text = _character_context(state)
     prev_text = _previous_summary(state)
     fs_text = _foreshadowing_context(state, ch_num)
+    narrative_context = build_narrative_context(state)
 
     outline = chapter.outline
-    plan_text = f"""第{ch_num}章：{chapter.title}
+    if chapter.plan:
+        plan_text = json.dumps(
+            chapter.plan,
+            ensure_ascii=False,
+            indent=2,
+        )
+    else:
+        plan_text = f"""第{ch_num}章：{chapter.title}
 大纲概要：{outline.summary if outline else '按大纲推进'}
-POV角色：{outline.pov_character if outline else '主角'}
-关键事件：{outline.key_events if outline else '自然推进'}
-爽点节拍：{outline.shuangdian_beat if outline else '待定'}
-章末钩子构思：{outline.chapter_hook_idea if outline else '制造悬念'}
-待埋伏笔：{outline.foreshadowing_to_plant if outline else '无'}
-待回收伏笔：{outline.foreshadowing_to_pay_off if outline else '无'}"""
+关键事件：{outline.key_events if outline else '自然推进'}"""
 
     user_prompt = f"""请写第{ch_num}章正文。
 
@@ -96,6 +124,9 @@ POV角色：{outline.pov_character if outline else '主角'}
 == 伏笔追踪 ==
 {fs_text}
 
+== 已批准的叙事事实、角色认知与连续性状态 ==
+{narrative_context}
+
 == 本轮重写反馈 ==
 {chapter.rewrite_feedback or '无'}
 
@@ -103,11 +134,20 @@ POV角色：{outline.pov_character if outline else '主角'}
 请写出2000-2500字的章节正文。记住：对话驱动、手机阅读适配、章末强钩子、避免AI写作禁忌。"""
 
     try:
+        def parse_and_validate(text):
+            parsed_prose, parsed_meta = parse_chapter_response(text)
+            validate_narrative_delta(
+                state,
+                chapter.plan,
+                parsed_meta,
+            )
+            return parsed_prose, parsed_meta
+
         prose, meta = call_text_with_contract_sync(
             call_llm_sync,
             SYSTEM_PROMPT,
             user_prompt,
-            parser=parse_chapter_response,
+            parser=parse_and_validate,
             contract_name="章节正文与 META",
             max_tokens=8192,
             temperature=0.85,
@@ -116,6 +156,12 @@ POV角色：{outline.pov_character if outline else '主角'}
         chapter.draft = prose
         chapter.word_count = len(prose.replace(' ', ''))  # 中文按字数算
         chapter.generation_meta = meta
+        chapter.narrative_delta = {
+            "chapter_summary": meta["chapter_summary"],
+            "facts_established": meta["facts_established"],
+            "knowledge_changes": meta["knowledge_changes"],
+            "continuity_changes": meta["continuity_changes"],
+        }
 
         if meta:
             chapter.chapter_hook = meta.get("chapter_hook", "")
@@ -137,6 +183,7 @@ def commit_generation_meta(state: GraphNovelState, ch_num: int) -> None:
     meta = chapter.generation_meta
     _update_foreshadowing(state, meta, ch_num)
     _update_arcs(state, meta, ch_num)
+    commit_narrative_delta(state, ch_num, chapter.narrative_delta)
 
 
 def _update_foreshadowing(state: GraphNovelState, meta: dict, ch_num: int) -> None:

@@ -266,13 +266,30 @@ def outline_batch_contract(
     )
 
 
-def chapter_plan_contract(expected_chapter: int) -> ResponseContract:
+def chapter_plan_contract(
+    expected_chapter: int,
+    state_validator: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> ResponseContract:
     def validate(value: Dict[str, Any]) -> None:
         _validate_schema(value, CHAPTER_PLAN_SCHEMA, path="chapter_plan")
         if value["chapter_number"] != expected_chapter:
             raise OutputContractError(
                 f"chapter_plan.chapter_number 应为 {expected_chapter}"
             )
+        if not value["causal_chain"]:
+            raise OutputContractError(
+                "chapter_plan.causal_chain 至少需要一条因果链"
+            )
+        for index, link in enumerate(value["causal_chain"]):
+            if not all(
+                link[key].strip()
+                for key in ("cause", "event", "effect")
+            ):
+                raise OutputContractError(
+                    f"chapter_plan.causal_chain[{index}] 不能包含空因果项"
+                )
+        if state_validator:
+            state_validator(value)
 
     return ResponseContract("章节规划", dict, validate)
 
@@ -428,7 +445,33 @@ CHAPTER_PLAN_SCHEMA = {
     "closing_hook": str,
     "dialogue_highlights": [str],
     "shuangdian_beat": str,
-    "continuity_notes": dict,
+    "causal_chain": [{
+        "cause": str,
+        "event": str,
+        "effect": str,
+    }],
+    "required_fact_ids": [str],
+    "planned_facts": [{
+        "fact_id": str,
+        "statement": str,
+        "category": str,
+        "visibility": str,
+    }],
+    "information_flow": [{
+        "fact_id": str,
+        "character": str,
+        "knowledge_level": str,
+        "source_type": str,
+        "source_character": str,
+        "evidence": str,
+    }],
+    "continuity_notes": {
+        "time": str,
+        "character_locations": dict,
+        "character_conditions": dict,
+        "resources": dict,
+        "previous_chapter_end": str,
+    },
     "ai_taboos_check": [str],
 }
 
@@ -447,6 +490,19 @@ CONSISTENCY_REVIEW_SCHEMA = {
     "ai_disease_count": int,
     "dialogue_ratio_estimate": str,
     "requires_rewrite": bool,
+    "logic_gate_passed": bool,
+    "narrative_audit": {
+        "causality": str,
+        "knowledge_provenance": str,
+        "continuity": str,
+    },
+    "narrative_violations": [{
+        "severity": str,
+        "category": str,
+        "description": str,
+        "evidence": str,
+        "suggested_fix": str,
+    }],
     "character_arc_updates": dict,
     "summary": str,
 }
@@ -509,6 +565,27 @@ WRITING_META_SCHEMA = {
         "how_it_was_resolved": str,
     }],
     "character_moments": dict,
+    "chapter_summary": str,
+    "facts_established": [{
+        "fact_id": str,
+        "statement": str,
+        "category": str,
+        "visibility": str,
+    }],
+    "knowledge_changes": [{
+        "fact_id": str,
+        "character": str,
+        "knowledge_level": str,
+        "source_type": str,
+        "source_character": str,
+        "evidence": str,
+    }],
+    "continuity_changes": {
+        "time": str,
+        "character_locations": dict,
+        "character_conditions": dict,
+        "resources": dict,
+    },
 }
 
 
@@ -565,6 +642,27 @@ def _validate_consistency_review(value: Dict[str, Any]) -> None:
         raise OutputContractError(
             "consistency_review 低于 6 分时 requires_rewrite 必须为 true"
         )
+    for key, audit in value["narrative_audit"].items():
+        if not audit.strip():
+            raise OutputContractError(
+                f"consistency_review.narrative_audit.{key} 不能为空"
+            )
+    blocking_severities = {"致命", "严重", "critical", "fatal", "serious"}
+    blocking_violation = any(
+        item["severity"].strip().lower() in blocking_severities
+        for item in value["narrative_violations"]
+    )
+    if blocking_violation and value["logic_gate_passed"]:
+        raise OutputContractError(
+            "consistency_review 存在严重叙事违规时 logic_gate_passed 必须为 false"
+        )
+    if (
+        (blocking_violation or not value["logic_gate_passed"])
+        and not value["requires_rewrite"]
+    ):
+        raise OutputContractError(
+            "consistency_review 逻辑门未通过时 requires_rewrite 必须为 true"
+        )
     if value["ai_disease_count"] < 0:
         raise OutputContractError(
             "consistency_review.ai_disease_count 不能为负数"
@@ -612,6 +710,8 @@ def _validate_writing_meta(value: Dict[str, Any]) -> None:
     _validate_schema(value, WRITING_META_SCHEMA, path="writing_meta")
     if not value["chapter_hook"].strip():
         raise OutputContractError("writing_meta.chapter_hook 不能为空")
+    if not value["chapter_summary"].strip():
+        raise OutputContractError("writing_meta.chapter_summary 不能为空")
     for name, moment in value["character_moments"].items():
         _require_type(name, str, path="writing_meta.character_moments key")
         _require_type(

@@ -16,6 +16,8 @@ from graph_novel.state import (
     ChapterOutline,
     Chapter,
     Foreshadowing,
+    NarrativeFact,
+    KnowledgeRecord,
 )
 
 __all__ = [
@@ -30,4 +32,6 @@ __all__ = [
     "ChapterOutline",
     "Chapter",
     "Foreshadowing",
+    "NarrativeFact",
+    "KnowledgeRecord",
 ]

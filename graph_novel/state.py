@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-CURRENT_STATE_VERSION = 5
+CURRENT_STATE_VERSION = 6
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -55,6 +55,31 @@ class Foreshadowing:
     payoff_chapter: Optional[int] = None
     payoff_description: Optional[str] = None
     status: str = "planted"  # planted | partially_paid | paid_off
+
+
+@dataclass
+class NarrativeFact:
+    """One durable fact established by an approved chapter."""
+
+    id: str
+    statement: str
+    category: str
+    established_in_chapter: int
+    visibility: str = "private"
+    status: str = "active"
+
+
+@dataclass
+class KnowledgeRecord:
+    """How one character came to know or suspect one narrative fact."""
+
+    fact_id: str
+    character: str
+    knowledge_level: str
+    learned_in_chapter: int
+    source_type: str
+    source_character: str = ""
+    evidence: str = ""
 
 
 @dataclass
@@ -108,6 +133,7 @@ class Chapter:
     chapter_number: int
     title: str
     outline: Optional[ChapterOutline] = None
+    plan: Dict[str, Any] = field(default_factory=dict)
     draft: str = ""
     consistency_report: Dict[str, Any] = field(default_factory=dict)
     polished_draft: str = ""
@@ -117,6 +143,7 @@ class Chapter:
     chapter_hook: str = ""  # 章末钩子
     shuangdian_type: str = ""  # "" | "小爽点" | "大爽点" | "铺垫"
     generation_meta: Dict[str, Any] = field(default_factory=dict)
+    narrative_delta: Dict[str, Any] = field(default_factory=dict)
     rewrite_feedback: str = ""
     revision_count: int = 0
     revision_history: List[Dict[str, Any]] = field(default_factory=list)
@@ -178,6 +205,9 @@ class GraphNovelState:
     # -- Active tracking (dynamic, updated per chapter)
     character_arc_tracker: Dict[str, CharacterArc] = field(default_factory=dict)
     foreshadowing_tracker: List[Foreshadowing] = field(default_factory=list)
+    narrative_facts: List[NarrativeFact] = field(default_factory=list)
+    character_knowledge: List[KnowledgeRecord] = field(default_factory=list)
+    continuity_state: Dict[str, Any] = field(default_factory=dict)
 
     # -- Platform metrics (番茄算法指标)
     chapter_hooks: List[str] = field(default_factory=list)  # 每章钩子记录
@@ -248,6 +278,8 @@ _MODEL_REGISTRY: Dict[str, type] = {
     "Chapter": Chapter,
     "NovelOutline": NovelOutline,
     "Foreshadowing": Foreshadowing,
+    "NarrativeFact": NarrativeFact,
+    "KnowledgeRecord": KnowledgeRecord,
     "GraphNovelState": GraphNovelState,
 }
 
@@ -368,6 +400,29 @@ def _migrate_state(state: GraphNovelState, source: Path) -> GraphNovelState:
             ):
                 state.pending_gate = f"chapter:{chapter.chapter_number}"
                 state.workflow_phase = "chapter_loop"
+
+    if state.version < 6:
+        for chapter in state.chapters:
+            if (
+                chapter.approval == ApprovalStatus.APPROVED
+                and not chapter.narrative_delta
+            ):
+                summary = ""
+                if chapter.outline:
+                    summary = chapter.outline.summary
+                if not summary:
+                    summary = chapter.chapter_hook or chapter.title
+                chapter.narrative_delta = {
+                    "chapter_summary": summary,
+                    "facts_established": [],
+                    "knowledge_changes": [],
+                    "continuity_changes": {
+                        "time": "",
+                        "character_locations": {},
+                        "character_conditions": {},
+                        "resources": {},
+                    },
+                }
 
     state.version = CURRENT_STATE_VERSION
     return state

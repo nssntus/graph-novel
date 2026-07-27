@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from graph_novel.state import (
     GraphNovelState, NodeStatus, ApprovalStatus, ArcStage,
     WorldSetting, Character, CharacterArc, NovelOutline,
-    ChapterOutline, Chapter, Foreshadowing,
+    ChapterOutline, Chapter, Foreshadowing, NarrativeFact,
+    KnowledgeRecord,
 )
 from graph_novel.engine import GraphNovelEngine, GraphPhase
 
@@ -195,6 +196,13 @@ MOCK_CONSISTENCY_REPORT = {
     "ai_disease_count": 0,
     "dialogue_ratio_estimate": "60%",
     "requires_rewrite": False,
+    "logic_gate_passed": True,
+    "narrative_audit": {
+        "causality": "关键事件均有前置原因。",
+        "knowledge_provenance": "角色新增认知均有目击或转述来源。",
+        "continuity": "时间、位置、伤势和资源连续。",
+    },
+    "narrative_violations": [],
     "character_arc_updates": {
         "Aria": "rising_action",
     },
@@ -260,13 +268,35 @@ def mock_chapter_plan(title="Test", chapter_number=1):
     return json.dumps({
         "chapter_number": chapter_number,
         "title": title,
-        "scene_plan": [],
+        "scene_plan": [{
+            "scene_number": 1,
+            "setting": "王座厅",
+            "characters_present": ["Aria"],
+            "action": "Aria 接受秘密任务",
+            "emotional_beat": "警惕",
+            "dialogue_focus": "任务的风险",
+            "word_count_target": 2200,
+        }],
         "pov_character": "Aria",
         "opening_hook": "刺客闯入",
         "closing_hook": "黑蜡封印裂开",
         "dialogue_highlights": [],
         "shuangdian_beat": "铺垫",
-        "continuity_notes": {},
+        "causal_chain": [{
+            "cause": "国王需要调查秘密事件",
+            "event": "Aria 接受密令",
+            "effect": "Aria 离开王都调查",
+        }],
+        "required_fact_ids": [],
+        "planned_facts": [],
+        "information_flow": [],
+        "continuity_notes": {
+            "time": "清晨",
+            "character_locations": {"Aria": "王座厅"},
+            "character_conditions": {"Aria": "健康"},
+            "resources": {"Aria": ["密封卷轴"]},
+            "previous_chapter_end": "无",
+        },
         "ai_taboos_check": [],
     })
 
@@ -278,6 +308,15 @@ def mock_chapter_response(prose=MOCK_CHAPTER_DRAFT):
         "foreshadowing_planted": [],
         "foreshadowing_paid": [],
         "character_moments": {},
+        "chapter_summary": "Aria 接受密令并踏上调查之路。",
+        "facts_established": [],
+        "knowledge_changes": [],
+        "continuity_changes": {
+            "time": "清晨",
+            "character_locations": {"Aria": "王城外"},
+            "character_conditions": {"Aria": "健康"},
+            "resources": {"Aria": ["密封卷轴"]},
+        },
     })
 
 
@@ -292,6 +331,24 @@ def test_state_serialization():
     state = make_sample_state()
     state.chapters[0].draft = MOCK_CHAPTER_DRAFT
     state.chapters[0].consistency_report = MOCK_CONSISTENCY_REPORT
+    state.narrative_facts.append(NarrativeFact(
+        id="fact.sealed_scroll",
+        statement="黑蜡卷轴由国王亲手交给 Aria",
+        category="线索",
+        established_in_chapter=1,
+    ))
+    state.character_knowledge.append(KnowledgeRecord(
+        fact_id="fact.sealed_scroll",
+        character="Aria",
+        knowledge_level="confirmed",
+        learned_in_chapter=1,
+        source_type="observed",
+        evidence="Aria 亲手接过卷轴",
+    ))
+    state.continuity_state = {
+        "time": "中午",
+        "character_locations": {"Aria": "王城东部森林"},
+    }
 
     # Serialize
     json_str = state.to_json()
@@ -310,6 +367,9 @@ def test_state_serialization():
     assert loaded.chapters[0].consistency_report["overall_score"] == 8
     assert loaded.character_arc_tracker["Aria"].arc_description == state.character_arc_tracker["Aria"].arc_description
     assert loaded.node_status["world_building"] == NodeStatus.COMPLETED
+    assert loaded.narrative_facts[0].id == "fact.sealed_scroll"
+    assert loaded.character_knowledge[0].source_type == "observed"
+    assert loaded.continuity_state["character_locations"]["Aria"] == "王城东部森林"
 
     print("✓ PASSED")
 
@@ -362,6 +422,15 @@ def test_chapter_pipeline_with_mocks():
             ],
             "foreshadowing_paid": [],
             "character_moments": {"Aria": "Called to secret mission — inciting incident"},
+            "chapter_summary": "Aria 接受秘密任务，并在途中遭遇刺客。",
+            "facts_established": [],
+            "knowledge_changes": [],
+            "continuity_changes": {
+                "time": "中午",
+                "character_locations": {"Aria": "王城东部森林"},
+                "character_conditions": {"Aria": "健康"},
+                "resources": {"Aria": ["密封卷轴"]},
+            },
         })
         mock_review.return_value = json.dumps(MOCK_CONSISTENCY_REPORT)
         mock_polish.return_value = MOCK_CHAPTER_DRAFT
@@ -410,6 +479,13 @@ def test_consistency_rewrite_loop():
         "ai_disease_count": 1,
         "dialogue_ratio_estimate": "40%",
         "requires_rewrite": True,
+        "logic_gate_passed": True,
+        "narrative_audit": {
+            "causality": "已核对。",
+            "knowledge_provenance": "已核对。",
+            "continuity": "已核对。",
+        },
+        "narrative_violations": [],
         "character_arc_updates": {},
         "summary": "Bad",
     }
@@ -423,6 +499,13 @@ def test_consistency_rewrite_loop():
         "ai_disease_count": 0,
         "dialogue_ratio_estimate": "60%",
         "requires_rewrite": False,
+        "logic_gate_passed": True,
+        "narrative_audit": {
+            "causality": "已核对。",
+            "knowledge_provenance": "已核对。",
+            "continuity": "已核对。",
+        },
+        "narrative_violations": [],
         "character_arc_updates": {},
         "summary": "Good",
     }
@@ -452,6 +535,256 @@ def test_consistency_rewrite_loop():
     assert "Major OOC" in writing_prompts[1]
     assert len(state.chapters[0].revision_history) == 1
 
+    print("✓ PASSED")
+
+
+def test_chapter_plan_is_persisted_and_consumed():
+    """Writing consumes the causal plan produced by chapter planning."""
+    print("  Testing persisted causal chapter plan...", end=" ")
+    from graph_novel.nodes import chapter_planning, writing
+
+    state = make_sample_state()
+    state.current_chapter = 1
+    plan = json.loads(mock_chapter_plan("密室中的第二把钥匙"))
+    plan["causal_chain"] = [{
+        "cause": "档案柜的封条此前已被人替换",
+        "event": "调查员比对封条编号",
+        "effect": "确认内鬼接触过档案柜",
+    }]
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=json.dumps(plan, ensure_ascii=False),
+    ):
+        chapter_planning.run_node(state)
+
+    chapter = state.chapters[0]
+    assert chapter.plan["causal_chain"][0]["cause"] == "档案柜的封条此前已被人替换"
+
+    with mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=mock_chapter_response(),
+    ) as write_call:
+        writing.run_node(state)
+
+    writing_prompt = write_call.call_args.args[1]
+    assert "调查员比对封条编号" in writing_prompt
+    assert "确认内鬼接触过档案柜" in writing_prompt
+    print("✓ PASSED")
+
+
+def test_information_transfer_requires_a_valid_source():
+    """A character cannot relay a fact they do not know."""
+    print("  Testing information provenance guard...", end=" ")
+    from graph_novel.narrative import validate_chapter_plan
+    from graph_novel.output_contracts import OutputContractError
+
+    state = make_sample_state()
+    state.narrative_facts.append(NarrativeFact(
+        id="fact.archive.code",
+        statement="封存档案的开启码是 4317",
+        category="秘密",
+        established_in_chapter=1,
+    ))
+    state.character_knowledge.append(KnowledgeRecord(
+        fact_id="fact.archive.code",
+        character="Aria",
+        knowledge_level="confirmed",
+        learned_in_chapter=1,
+        source_type="observed",
+        evidence="Aria 亲眼看见开启码",
+    ))
+    plan = json.loads(mock_chapter_plan(chapter_number=2))
+    plan["information_flow"] = [{
+        "fact_id": "fact.archive.code",
+        "character": "守卫",
+        "knowledge_level": "confirmed",
+        "source_type": "told",
+        "source_character": "Kael",
+        "evidence": "Kael 告诉守卫开启码",
+    }]
+
+    try:
+        validate_chapter_plan(state, plan)
+        raise AssertionError("Expected unsupported information source to fail")
+    except OutputContractError as exc:
+        assert "Kael 尚不知道" in str(exc)
+
+    state.character_knowledge.append(KnowledgeRecord(
+        fact_id="fact.archive.code",
+        character="Kael",
+        knowledge_level="suspected",
+        learned_in_chapter=1,
+        source_type="heard",
+        evidence="Kael 只听到了不完整的传闻",
+    ))
+    try:
+        validate_chapter_plan(state, plan)
+        raise AssertionError("Expected knowledge escalation to fail")
+    except OutputContractError as exc:
+        assert "仅为 suspected" in str(exc)
+    print("✓ PASSED")
+
+
+def test_high_score_knowledge_leak_forces_rewrite():
+    """A serious narrative violation rewrites even when the score is high."""
+    print("  Testing high-score knowledge leak routing...", end=" ")
+
+    state = make_sample_state()
+    engine = GraphNovelEngine(state)
+    engine.set_approval_callback(lambda *_args, **_kwargs: (True, ""))
+
+    blocked_review = dict(MOCK_CONSISTENCY_REPORT)
+    blocked_review.update({
+        "overall_score": 8,
+        "issues": [],
+        "requires_rewrite": True,
+        "logic_gate_passed": False,
+        "narrative_violations": [{
+            "severity": "严重",
+            "category": "信息越权",
+            "description": "未进入现场的调查员直接说出了密室密码。",
+            "evidence": "正文没有目击、转述或推理过程。",
+            "suggested_fix": "补充可靠的信息传播路径，或将确认降级为怀疑。",
+        }],
+        "summary": "文风合格，但存在严重信息泄漏。",
+    })
+    clean_review = dict(MOCK_CONSISTENCY_REPORT)
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=mock_chapter_plan(),
+    ) as plan_call, mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=mock_chapter_response(),
+    ) as write_call, mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        side_effect=[
+            json.dumps(blocked_review, ensure_ascii=False),
+            json.dumps(clean_review, ensure_ascii=False),
+        ],
+    ) as review_call, mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=MOCK_CHAPTER_DRAFT,
+    ):
+        engine.run_single_chapter(1)
+
+    assert plan_call.call_count == 2
+    assert write_call.call_count == 2
+    assert review_call.call_count == 2
+    assert "未进入现场的调查员" in plan_call.call_args_list[1].args[1]
+    print("✓ PASSED")
+
+
+def test_unresolved_narrative_violation_stops_graph():
+    """The graph stops instead of polishing unresolved serious logic defects."""
+    print("  Testing narrative rewrite limit...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+
+    state = make_sample_state()
+    engine = GraphNovelEngine(state)
+    blocked_review = dict(MOCK_CONSISTENCY_REPORT)
+    blocked_review.update({
+        "overall_score": 8,
+        "issues": [],
+        "requires_rewrite": True,
+        "logic_gate_passed": False,
+        "narrative_violations": [{
+            "severity": "严重",
+            "category": "因果断裂",
+            "description": "关键证物出现前没有获取过程。",
+            "evidence": "前文和本章均未交代来源。",
+            "suggested_fix": "补充获取证物的场景。",
+        }],
+    })
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=mock_chapter_plan(),
+    ) as plan_call, mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=mock_chapter_response(),
+    ) as write_call, mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=json.dumps(blocked_review, ensure_ascii=False),
+    ) as review_call, mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+    ) as polish_call:
+        try:
+            engine.run_chapter_generation(1)
+            raise AssertionError("Expected unresolved logic to stop the graph")
+        except GraphExecutionError as exc:
+            assert exc.node_key == "narrative_gate_1"
+
+    assert plan_call.call_count == 3
+    assert write_call.call_count == 3
+    assert review_call.call_count == 3
+    polish_call.assert_not_called()
+    assert state.workflow_phase == "failed"
+    assert state.pending_gate is None
+    assert len(state.chapters[0].revision_history) == 3
+    assert "关键证物出现前没有获取过程" in state.chapters[0].rewrite_feedback
+    print("✓ PASSED")
+
+
+def test_narrative_delta_commits_only_after_approval():
+    """Candidate facts and knowledge are transactional chapter side effects."""
+    print("  Testing transactional narrative delta...", end=" ")
+
+    state = make_sample_state()
+    state.foundation_approval = ApprovalStatus.APPROVED
+    engine = GraphNovelEngine(state)
+
+    plan = json.loads(mock_chapter_plan("封存档案"))
+    plan["planned_facts"] = [{
+        "fact_id": "fact.archive.code",
+        "statement": "封存档案的开启码是 4317",
+        "category": "秘密",
+        "visibility": "private",
+    }]
+    plan["information_flow"] = [{
+        "fact_id": "fact.archive.code",
+        "character": "Aria",
+        "knowledge_level": "confirmed",
+        "source_type": "observed",
+        "source_character": "",
+        "evidence": "Aria 亲眼看见国王输入开启码",
+    }]
+
+    response_meta = json.loads(
+        mock_chapter_response().split("---META---", 1)[1]
+    )
+    response_meta["facts_established"] = plan["planned_facts"]
+    response_meta["knowledge_changes"] = plan["information_flow"]
+    write_response = (
+        MOCK_CHAPTER_DRAFT
+        + "\n\n---META---\n"
+        + json.dumps(response_meta, ensure_ascii=False)
+    )
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=json.dumps(plan, ensure_ascii=False),
+    ), mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=write_response,
+    ), mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=json.dumps(MOCK_CONSISTENCY_REPORT),
+    ), mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=MOCK_CHAPTER_DRAFT,
+    ):
+        engine.run_chapter_generation(1)
+
+    assert state.narrative_facts == []
+    assert state.character_knowledge == []
+    assert state.chapters[0].narrative_delta["facts_established"]
+
+    engine.apply_chapter_decision(1, True, "")
+    assert state.narrative_facts[0].id == "fact.archive.code"
+    assert state.character_knowledge[0].character == "Aria"
+    assert state.character_knowledge[0].source_type == "observed"
     print("✓ PASSED")
 
 
@@ -767,6 +1100,13 @@ def test_output_contract_parsing_and_retry():
         "ai_disease_count": 0,
         "dialogue_ratio_estimate": "60%",
         "requires_rewrite": False,
+        "logic_gate_passed": True,
+        "narrative_audit": {
+            "causality": "已核对。",
+            "knowledge_provenance": "已核对。",
+            "continuity": "已核对。",
+        },
+        "narrative_violations": [],
         "character_arc_updates": {},
         "summary": "非法分数",
     }
@@ -1041,7 +1381,7 @@ def test_execution_trace_and_unified_export():
     assert export_filename(state) == "trace_export_完整版.md"
 
     reloaded = GraphNovelState.from_json(state.save())
-    assert reloaded.version == 5
+    assert reloaded.version == 6
     assert reloaded.execution_events == state.execution_events
     print("✓ PASSED")
 
@@ -1161,6 +1501,13 @@ def test_node_contract_failures_are_observable():
         "ai_disease_count": 0,
         "dialogue_ratio_estimate": "0%",
         "requires_rewrite": True,
+        "logic_gate_passed": True,
+        "narrative_audit": {
+            "causality": "已核对。",
+            "knowledge_provenance": "已核对。",
+            "continuity": "已核对。",
+        },
+        "narrative_violations": [],
         "character_arc_updates": {},
         "summary": "非法分数",
     }
@@ -1417,6 +1764,7 @@ def test_project_inputs_and_legacy_state_migration():
         "target_total_chapters", "workflow_phase", "pending_gate",
         "foundation_approval", "foundation_feedback", "last_error",
         "active_task", "execution_events",
+        "narrative_facts", "character_knowledge", "continuity_state",
     ):
         legacy_data.pop(key, None)
     legacy_data["version"] = 1
@@ -1424,7 +1772,7 @@ def test_project_inputs_and_legacy_state_migration():
     legacy_path.write_text(json.dumps(legacy_data, ensure_ascii=False), encoding="utf-8")
 
     loaded = GraphNovelState.from_json(legacy_path)
-    assert loaded.version == 5
+    assert loaded.version == 6
     assert loaded.target_total_chapters == loaded.total_chapters
     assert loaded.foundation_approval == ApprovalStatus.APPROVED
     assert loaded.workflow_phase == "chapter_loop"
@@ -1441,9 +1789,36 @@ def test_project_inputs_and_legacy_state_migration():
     )
 
     migrated = GraphNovelState.from_json(version_two_path)
-    assert migrated.version == 5
+    assert migrated.version == 6
     assert migrated.chapters[0].side_effects_committed
     assert migrated.pending_gate == "chapter:2"
+    assert migrated.chapters[0].narrative_delta["chapter_summary"]
+
+    version_five = make_sample_state()
+    version_five.version = 5
+    version_five.chapters[0].approval = ApprovalStatus.APPROVED
+    version_five_data = version_five.to_dict()
+    for key in (
+        "narrative_facts",
+        "character_knowledge",
+        "continuity_state",
+    ):
+        version_five_data.pop(key, None)
+    for chapter_data in version_five_data["chapters"]:
+        chapter_data.pop("plan", None)
+        chapter_data.pop("narrative_delta", None)
+    version_five_path = Path(tempfile.mkdtemp()) / "version_five_state.json"
+    version_five_path.write_text(
+        json.dumps(version_five_data, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    migrated_five = GraphNovelState.from_json(version_five_path)
+    assert migrated_five.version == 6
+    assert migrated_five.chapters[0].plan == {}
+    assert (
+        migrated_five.chapters[0].narrative_delta["chapter_summary"]
+        == migrated_five.chapters[0].title
+    )
     print("✓ PASSED")
 
 
@@ -1551,18 +1926,7 @@ def test_foundation_web_api_contract():
 
 def _chapter_pipeline_mocks():
     """Return deterministic chapter generation payloads."""
-    plan = json.dumps({
-        "chapter_number": 1,
-        "title": "黑蜡封印",
-        "scene_plan": [],
-        "pov_character": "Aria",
-        "opening_hook": "刺客闯入",
-        "closing_hook": "黑蜡封印裂开",
-        "dialogue_highlights": [],
-        "shuangdian_beat": "小爽点",
-        "continuity_notes": {},
-        "ai_taboos_check": [],
-    })
+    plan = mock_chapter_plan("黑蜡封印")
     write = MOCK_CHAPTER_DRAFT + "\n\n---META---\n" + json.dumps({
         "chapter_hook": "黑蜡封印突然裂开",
         "shuangdian_beat": "小爽点",
@@ -1573,6 +1937,15 @@ def _chapter_pipeline_mocks():
         "foreshadowing_paid": [],
         "character_moments": {
             "Aria": "第一次公开质疑国王",
+        },
+        "chapter_summary": "Aria 接受密令并在途中遭遇刺客。",
+        "facts_established": [],
+        "knowledge_changes": [],
+        "continuity_changes": {
+            "time": "中午",
+            "character_locations": {"Aria": "王城东部森林"},
+            "character_conditions": {"Aria": "健康"},
+            "resources": {"Aria": ["密封卷轴"]},
         },
     })
     review = dict(MOCK_CONSISTENCY_REPORT)
@@ -1746,18 +2119,12 @@ def test_complete_mock_web_workflow():
     def plan_for_prompt(_system_prompt, user_prompt, **_kwargs):
         marker = user_prompt.split("规划第", 1)[1].split("章", 1)[0]
         chapter_number = int(marker)
-        return json.dumps({
-            "chapter_number": chapter_number,
-            "title": f"测试章节{chapter_number}",
-            "scene_plan": [],
-            "pov_character": "林凡",
-            "opening_hook": "危机突然出现",
-            "closing_hook": "新的真相浮现",
-            "dialogue_highlights": [],
-            "shuangdian_beat": "小爽点",
-            "continuity_notes": {},
-            "ai_taboos_check": [],
-        }, ensure_ascii=False)
+        plan = json.loads(mock_chapter_plan(
+            f"测试章节{chapter_number}",
+            chapter_number,
+        ))
+        plan["pov_character"] = "林凡"
+        return json.dumps(plan, ensure_ascii=False)
 
     with flask_app.test_client() as client, \
          mock.patch(
@@ -2006,6 +2373,11 @@ def run_all_tests():
         test_node_contract_failures_are_observable,
         test_chapter_pipeline_with_mocks,
         test_consistency_rewrite_loop,
+        test_chapter_plan_is_persisted_and_consumed,
+        test_information_transfer_requires_a_valid_source,
+        test_high_score_knowledge_leak_forces_rewrite,
+        test_unresolved_narrative_violation_stops_graph,
+        test_narrative_delta_commits_only_after_approval,
         test_global_review,
         test_global_review_guards_and_failure,
         test_foreshadowing_tracker,

@@ -55,6 +55,7 @@ from graph_novel.nodes import (
     human_approval,
     global_review,
 )
+from graph_novel.narrative import has_blocking_narrative_violations
 
 
 class GraphPhase(Enum):
@@ -461,8 +462,12 @@ class GraphNovelEngine:
             review = chapter.consistency_report
             needs_rewrite = review.get("requires_rewrite", False) if review else False
             score = review.get("overall_score", 10) if review else 10
+            narrative_blocked = has_blocking_narrative_violations(review)
+            should_rewrite = needs_rewrite and (
+                score < 6 or narrative_blocked
+            )
 
-            if needs_rewrite and rewrite_count < max_rewrites and score < 6:
+            if should_rewrite and rewrite_count < max_rewrites:
                 rewrite_count += 1
                 self.state.log(
                     f"Chapter {ch_num} needs rewrite (score {score}/10). "
@@ -481,6 +486,32 @@ class GraphNovelEngine:
                     rewrite_attempt=rewrite_count,
                 )
                 continue
+            elif narrative_blocked:
+                node_key = f"narrative_gate_{ch_num}"
+                message = (
+                    f"Chapter {ch_num} 仍存在严重叙事逻辑问题，"
+                    f"已达到 {max_rewrites} 次自动重写上限。"
+                )
+                self._prepare_chapter_revision(
+                    chapter,
+                    self._format_review_feedback(review),
+                    source="narrative_gate",
+                )
+                self.state.node_status[node_key] = NodeStatus.FAILED
+                self.state.last_error = {
+                    "node": node_key,
+                    "message": message,
+                }
+                self.state.workflow_phase = "failed"
+                self.state.pending_gate = None
+                self._record_route(
+                    f"consistency_review_{ch_num}",
+                    node_key,
+                    "narrative_rewrite_limit_reached",
+                    score=score,
+                    rewrite_attempt=rewrite_count,
+                )
+                raise GraphExecutionError(node_key, message)
             else:
                 if rewrite_count > 0:
                     self.state.log(
@@ -614,7 +645,8 @@ class GraphNovelEngine:
 
     @staticmethod
     def _format_review_feedback(review: dict) -> str:
-        issues = review.get("issues", [])
+        issues = list(review.get("issues", []))
+        issues.extend(review.get("narrative_violations", []))
         if not issues:
             return review.get("summary", "一致性审查要求重写")
         lines = ["一致性审查要求重写："]
@@ -639,19 +671,23 @@ class GraphNovelEngine:
                 "source": source,
                 "feedback": feedback,
                 "title": chapter.title,
+                "plan": chapter.plan,
                 "draft": chapter.draft,
                 "polished_draft": chapter.polished_draft,
                 "consistency_report": chapter.consistency_report,
                 "generation_meta": chapter.generation_meta,
+                "narrative_delta": chapter.narrative_delta,
                 "human_feedback": chapter.human_feedback,
             })
             chapter.revision_count += 1
 
         chapter.rewrite_feedback = feedback
+        chapter.plan = {}
         chapter.draft = ""
         chapter.polished_draft = ""
         chapter.consistency_report = {}
         chapter.generation_meta = {}
+        chapter.narrative_delta = {}
         chapter.word_count = 0
         chapter.chapter_hook = ""
         chapter.shuangdian_type = ""

@@ -11,6 +11,10 @@ from graph_novel.output_contracts import (
     call_json_with_contract_sync,
     chapter_plan_contract,
 )
+from graph_novel.narrative import (
+    build_narrative_context,
+    validate_chapter_plan,
+)
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的章节规划师。在每章写作前，你制定详细的叙事计划。
 
@@ -32,8 +36,22 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的章节规划师。在每章�
 - closing_hook: 章末钩子（怎么让读者必须点下一章）
 - dialogue_highlights: 本章对话亮点（至少1个高燃/高虐/反转对话场景）
 - shuangdian_beat: 本章爽点节奏说明
-- continuity_notes: 承接上文 {time_of_day, character_positions, previous_chapter_end}
+- causal_chain: 因果链 [{cause, event, effect}]，每个推进都要有前因和后果
+- required_fact_ids: 本章依赖的已批准事实 ID；不能引用不存在的事实
+- planned_facts: 本章计划建立的持久事实 [{fact_id, statement, category, visibility}]；
+  fact_id 使用稳定且全书唯一的英文标识
+- information_flow: 按发生顺序列出本章角色认知变化，每条包含：
+  {fact_id, character, knowledge_level(heard/suspected/inferred/confirmed),
+   source_type(observed/told/inferred/public/document), source_character, evidence}
+- continuity_notes: 承接上文
+  {time, character_locations, character_conditions, resources, previous_chapter_end}
 - ai_taboos_check: 本章要避免的AI病（列出3个具体要避开的AI写作禁忌）
+
+逻辑铁律：
+- 角色不能凭空知道事实；每次认知变化必须有目击、转述、推理、公开信息或文档证据
+- “怀疑/推断”不能无铺垫升级为“确认”
+- 新事件必须能在 causal_chain 中找到前置原因
+- 不得为了推进大纲而覆盖已批准的事实、位置、伤势或资源状态
 
 请只输出 JSON 对象，不要其他文字。"""
 
@@ -49,6 +67,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 
     prev_context = _build_previous_context(state)
     arc_text = _build_arc_status_text(state)
+    narrative_context = build_narrative_context(state)
     outline_text = json.dumps(_serialize_outline(outline), ensure_ascii=False, indent=2) if outline else "无大纲。"
 
     # 爽点排期上下文
@@ -75,6 +94,9 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 角色弧线状态：
 {arc_text}
 
+已批准的叙事事实、角色认知与连续性状态：
+{narrative_context}
+
 本轮重写反馈：
 {rewrite_feedback}
 
@@ -87,7 +109,13 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
             call_llm_sync,
             SYSTEM_PROMPT,
             user_prompt,
-            contract=chapter_plan_contract(ch_num),
+            contract=chapter_plan_contract(
+                ch_num,
+                state_validator=lambda value: validate_chapter_plan(
+                    state,
+                    value,
+                ),
+            ),
             max_tokens=4096,
             temperature=0.7,
         )
@@ -97,6 +125,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         chapter = state.chapters[ch_num - 1]
         chapter.title = data.get("title", f"第{ch_num}章")
         chapter.outline = outline
+        chapter.plan = data
 
         state.node_status[f"chapter_planning_{ch_num}"] = NodeStatus.COMPLETED
         state.log(f"节点4: 章节规划 — 第{ch_num}章已规划。")

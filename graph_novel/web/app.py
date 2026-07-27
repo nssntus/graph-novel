@@ -854,6 +854,7 @@ def _node_label(node_key: str) -> str:
         ("chapter_planning_", "章节规划"),
         ("writing_", "章节写作"),
         ("consistency_review_", "一致性审查"),
+        ("narrative_gate_", "叙事逻辑门"),
         ("style_polish_", "风格润色"),
         ("human_approval_", "章节审批"),
     )
