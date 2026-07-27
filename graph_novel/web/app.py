@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from graph_novel.state import (
     GraphNovelState, ApprovalStatus, NodeStatus
 )
-from graph_novel.engine import GraphNovelEngine
+from graph_novel.engine import GraphNovelEngine, GraphExecutionError
 
 load_dotenv()
 
@@ -40,9 +40,6 @@ _approval_results: Dict[str, dict] = {}
 _save_dir = Path(os.environ.get("GRAPH_NOVEL_DIR", str(Path.home() / "GraphNovel_Projects")))
 
 _save_dir.mkdir(parents=True, exist_ok=True)
-
-# Store for running engines — indexed by project_id
-_running_engines: Dict[str, GraphNovelEngine] = {}
 
 # ======================================================================
 # Routes
@@ -64,8 +61,12 @@ def create_project():
         genre = request.form.get("genre", "都市脑洞").strip()
         premise = request.form.get("premise", "").strip()
         theme = request.form.get("theme", "").strip()
-        target_chapters = int(request.form.get("target_chapters", "30"))
-        target_words = int(request.form.get("target_words", "500000"))
+        try:
+            target_chapters = int(request.form.get("target_chapters", "30"))
+            target_words = int(request.form.get("target_words", "500000"))
+        except (TypeError, ValueError):
+            flash("目标章数和目标总字数必须是整数。", "error")
+            return render_template("create.html")
         notes = request.form.get("notes", "").strip()
         # genre_tags as comma-separated list
         tags_raw = request.form.get("genre_tags", "")
@@ -74,14 +75,25 @@ def create_project():
         if not title:
             flash("请输入小说名称。", "error")
             return render_template("create.html")
+        if not 5 <= target_chapters <= 200:
+            flash("目标章数必须在 5 到 200 之间。", "error")
+            return render_template("create.html")
+        if not 50000 <= target_words <= 5000000:
+            flash("目标总字数必须在 5 万到 500 万之间。", "error")
+            return render_template("create.html")
 
         # Create state
         project_id = _slugify(title)
         state = GraphNovelState(
+            project_id=project_id,
             novel_title=title,
             save_dir=_save_dir / project_id,
+            creative_genre=genre,
+            creative_premise=premise,
+            creative_theme=theme,
             genre_tags=genre_tags,
             target_total_words=target_words,
+            target_total_chapters=target_chapters,
             creative_notes=notes,
             world_setting=None,
             total_chapters=target_chapters,
@@ -93,8 +105,6 @@ def create_project():
 
         _engines[project_id] = engine
         _states[project_id] = state
-        _approval_events[project_id] = threading.Event()
-        _approval_results[project_id] = {}
 
         return redirect(url_for("foundation", project_id=project_id))
 
@@ -133,45 +143,33 @@ def foundation(project_id: str):
 
 @app.route("/api/<project_id>/run-foundation", methods=["POST"])
 def api_run_foundation(project_id: str):
-    """Run the foundation phase (nodes 1-3 + approval)."""
+    """Run Foundation nodes 1-3 and stop at the persisted approval gate."""
     engine = _get_or_create_engine(project_id)
     if not engine:
         return jsonify({"error": "Project not found"}), 404
 
-    # Set up foundation approval to auto-approve via callback,
-    # because the user will approve manually through the UI
-    approval_event = threading.Event()
-    approval_result = {}
+    try:
+        state = engine.run_foundation_generation()
+    except GraphExecutionError as exc:
+        state = engine.state
+        _states[project_id] = state
+        status_code = 409 if exc.code == "invalid_transition" else 422
+        return jsonify({
+            "success": False,
+            "status": (
+                "invalid_transition"
+                if exc.code == "invalid_transition"
+                else "failed"
+            ),
+            "node": exc.node_key,
+            "error": str(exc),
+        }), status_code
 
-    def foundation_callback(state, stage="foundation"):
-        approval_event.wait()  # Wait for UI to respond
-        return approval_result.get("approved", False), approval_result.get("feedback", "")
-
-    engine.set_foundation_approval_callback(foundation_callback)
-
-    # Store
-    _approval_events[project_id] = approval_event
-    _approval_results[project_id] = approval_result
-    _running_engines[project_id] = engine
-
-    # Run in background thread
-    def run_phase():
-        try:
-            engine._run_foundation()
-            engine.state.save()
-        except Exception as e:
-            engine.state.log(f"Foundation error: {e}")
-
-    thread = threading.Thread(target=run_phase, daemon=True)
-    thread.start()
-    # Wait briefly for foundation to complete (it's fast)
-    thread.join(timeout=120)
-
-    state = engine.state
     _states[project_id] = state
 
     return jsonify({
         "success": True,
+        "status": "awaiting_approval",
         "world_setting": _serialize_dataclass(state.world_setting) if state.world_setting else None,
         "characters": [_serialize_dataclass(c) for c in state.characters],
         "outline": _serialize_dataclass(state.novel_outline) if state.novel_outline else None,
@@ -182,29 +180,37 @@ def api_run_foundation(project_id: str):
 @app.route("/api/<project_id>/approve-foundation", methods=["POST"])
 def api_approve_foundation(project_id: str):
     """Approve or reject the foundation."""
-    data = request.get_json()
-    approved = data.get("approved", False)
-    feedback = data.get("feedback", "")
+    engine = _get_or_create_engine(project_id)
+    if not engine:
+        return jsonify({"error": "Project not found"}), 404
 
-    if project_id in _approval_results:
-        _approval_results[project_id]["approved"] = approved
-        _approval_results[project_id]["feedback"] = feedback
-    if project_id in _approval_events:
-        _approval_events[project_id].set()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("approved"), bool):
+        return jsonify({"error": "approved must be a boolean"}), 400
 
-    if project_id in _running_engines and approved:
-        engine = _running_engines[project_id]
-        # Complete the chapter initiation
-        for ch_num in range(1, engine.state.total_chapters + 1):
-            from graph_novel.state import Chapter
-            if len(engine.state.chapters) < ch_num:
-                engine.state.chapters.append(
-                    Chapter(chapter_number=ch_num, title=f"Chapter {ch_num}")
-                )
-        engine.state.save()
-        _states[project_id] = engine.state
+    approved = data["approved"]
+    feedback = str(data.get("feedback", "")).strip()
+    if not approved and not feedback:
+        return jsonify({"error": "驳回 Foundation 时请填写修改意见。"}), 400
 
-    return jsonify({"success": True})
+    try:
+        state = engine.apply_foundation_decision(approved, feedback)
+    except GraphExecutionError as exc:
+        return jsonify({
+            "success": False,
+            "status": "invalid_transition",
+            "node": exc.node_key,
+            "error": str(exc),
+        }), 409
+
+    _states[project_id] = state
+    return jsonify({
+        "success": True,
+        "status": "approved" if approved else "rejected",
+        "next_action": (
+            "chapters" if approved else "regenerate_foundation"
+        ),
+    })
 
 
 @app.route("/project/<project_id>/chapters")
@@ -352,6 +358,9 @@ def api_get_state(project_id: str):
 
     return jsonify({
         "title": state.novel_title,
+        "workflow_phase": state.workflow_phase,
+        "pending_gate": state.pending_gate,
+        "foundation_approval": state.foundation_approval.value,
         "current_chapter": state.current_chapter,
         "total_chapters": state.total_chapters,
         "node_status": {k: v.value for k, v in state.node_status.items()},
@@ -569,11 +578,18 @@ def _load_or_get_state(project_id: str) -> Optional[GraphNovelState]:
     if project_id in _states:
         return _states[project_id]
 
-    state_path = _save_dir / project_id / f"{project_id}_state.json"
-    if state_path.exists():
-        state = GraphNovelState.from_json(state_path)
-        _states[project_id] = state
-        return state
+    project_dir = _save_dir / project_id
+    state_paths = (
+        project_dir / f"{project_id}_state.json",
+        project_dir / "graph_novel_state.json",
+    )
+    for state_path in state_paths:
+        if state_path.exists():
+            state = GraphNovelState.from_json(state_path)
+            if not state.project_id:
+                state.project_id = project_id
+            _states[project_id] = state
+            return state
 
     return None
 
@@ -602,13 +618,20 @@ def _list_projects() -> List[dict]:
     for project_dir in sorted(_save_dir.iterdir(), reverse=True):
         if project_dir.is_dir():
             state_file = project_dir / f"{project_dir.name}_state.json"
+            if not state_file.exists():
+                state_file = project_dir / "graph_novel_state.json"
             if state_file.exists():
                 try:
                     data = json.loads(state_file.read_text())
+                    completed_chapters = sum(
+                        1
+                        for chapter in data.get("chapters", [])
+                        if chapter.get("approval") == ApprovalStatus.APPROVED.value
+                    )
                     projects.append({
                         "id": project_dir.name,
                         "title": data.get("novel_title", project_dir.name),
-                        "chapters": len(data.get("chapters", [])),
+                        "chapters": completed_chapters,
                         "total_chapters": data.get("total_chapters", 0),
                         "created_at": data.get("created_at", ""),
                     })

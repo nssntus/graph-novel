@@ -73,7 +73,8 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     chars_text = "\n".join(char_summary)
 
     genre_tags = ", ".join(state.genre_tags) if state.genre_tags else "未指定"
-    total_chapters = state.total_chapters or 30
+    total_chapters = state.target_total_chapters or state.total_chapters or 30
+    foundation_feedback = state.foundation_feedback or "无"
 
     user_prompt = f"""为这部番茄小说创建完整大纲。
 
@@ -84,18 +85,32 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 {chars_text}
 
 书名：{state.novel_title}
+用户指定题材：{state.creative_genre or '未指定'}
 题材标签：{genre_tags}
+用户的一句话卖点：{state.creative_premise or '未指定'}
+用户的核心爽点方向：{state.creative_theme or '未指定'}
+目标总字数：{state.target_total_words}
 目标章数：{total_chapters}
+上一轮 Foundation 修改意见：{foundation_feedback}
 
-生成完整大纲 JSON。特别是前3章要严格按黄金三章法则设计。"""
+生成恰好 {total_chapters} 章的完整大纲 JSON。特别是前3章要严格按黄金三章法则设计。"""
 
     try:
         raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=0.7)
         json_text = _extract_json(raw)
         data = json.loads(json_text)
+        if not isinstance(data, dict):
+            raise ValueError("大纲响应必须是 JSON 对象")
+        chapter_data = data.get("chapter_outlines")
+        if not isinstance(chapter_data, list) or not chapter_data:
+            raise ValueError("大纲响应缺少 chapter_outlines")
+        if len(chapter_data) != total_chapters:
+            raise ValueError(
+                f"大纲章数不匹配：期望 {total_chapters}，实际 {len(chapter_data)}"
+            )
 
         chapters = []
-        for co in data.get("chapter_outlines", []):
+        for co in chapter_data:
             chapters.append(ChapterOutline(
                 chapter_number=co.get("chapter_number", 0),
                 title=co.get("title", ""),
@@ -122,6 +137,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         state.log(f"节点3: 大纲规划 — {len(chapters)} 章已规划 | 爽点排期已定。")
     except Exception as e:
         state.node_status["outline_planning"] = NodeStatus.FAILED
+        state.last_error = {"node": "outline_planning", "message": str(e)}
         state.log(f"节点3: 大纲规划 — 失败: {e}")
 
     return state

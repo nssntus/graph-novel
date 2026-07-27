@@ -6,6 +6,7 @@ Node 2: 人物设计 Agent
 
 import json
 import re
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from graph_novel.state import (
@@ -54,14 +55,19 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     world_json = json.dumps(world_dict, ensure_ascii=False, indent=2)
 
     genre_tags = ", ".join(state.genre_tags) if state.genre_tags else "未指定"
+    foundation_feedback = state.foundation_feedback or "无"
 
     user_prompt = f"""为这部番茄小说创角。
 
 世界设定：
 {world_json}
 
+用户指定题材：{state.creative_genre or '未指定'}
 题材标签：{genre_tags}
+用户的一句话卖点：{state.creative_premise or '未指定'}
+用户的核心爽点方向：{state.creative_theme or '未指定'}
 书名：{state.novel_title}
+上一轮 Foundation 修改意见：{foundation_feedback}
 
 生成完整的角色阵容 JSON。"""
 
@@ -100,6 +106,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         state.log(f"节点2: 人物设计 — {len(characters)} 个角色已创建。")
     except Exception as e:
         state.node_status["character_design"] = NodeStatus.FAILED
+        state.last_error = {"node": "character_design", "message": str(e)}
         state.log(f"节点2: 人物设计 — 失败: {e}")
 
     return state

@@ -15,6 +15,9 @@ import time
 from pathlib import Path
 from unittest import mock
 
+TEST_PROJECTS_DIR = Path(tempfile.mkdtemp(prefix="graph_novel_web_tests_"))
+os.environ["GRAPH_NOVEL_DIR"] = str(TEST_PROJECTS_DIR)
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -237,6 +240,7 @@ def test_state_serialization():
     assert loaded.chapters[0].draft == MOCK_CHAPTER_DRAFT
     assert loaded.chapters[0].consistency_report["overall_score"] == 8
     assert loaded.character_arc_tracker["Aria"].arc_description == state.character_arc_tracker["Aria"].arc_description
+    assert loaded.node_status["world_building"] == NodeStatus.COMPLETED
 
     print("✓ PASSED")
 
@@ -521,6 +525,293 @@ def test_data_models():
     print("✓ PASSED")
 
 
+def _foundation_llm_mocks(chapter_count=2):
+    """Return deterministic LLM payloads for the three Foundation nodes."""
+    world = json.dumps({
+        "era": "现代都市",
+        "location": "东海市",
+        "special_setting": "信息差可以兑换现实资源",
+        "technology_level": "现代",
+        "social_structure": "现代商业社会",
+        "key_locations": [],
+        "rules_and_laws": "兑换必须付出行动成本",
+        "history": "主角刚刚重生",
+        "golden_finger": "信息差兑换系统",
+        "notes": "",
+    }, ensure_ascii=False)
+    characters = json.dumps([{
+        "name": "林凡",
+        "role": "主角",
+        "background": "重生前创业失败。",
+        "personality": "冷静、果断",
+        "motivation": "弥补遗憾并建立商业帝国",
+        "golden_finger": "信息差兑换系统",
+        "arc_stage": "inciting_incident",
+        "arc_description": "从失败者成长为负责任的领导者。",
+        "relationships": {},
+        "first_appearance_hook": "当众指出所有人都不知道的商机",
+        "notes": "",
+    }], ensure_ascii=False)
+    outlines = []
+    for number in range(1, chapter_count + 1):
+        outlines.append({
+            "chapter_number": number,
+            "title": f"第{number}章 测试标题",
+            "summary": "推进主线",
+            "pov_character": "林凡",
+            "key_events": ["冲突发生"],
+            "foreshadowing_to_plant": [],
+            "foreshadowing_to_pay_off": [],
+            "shuangdian_beat": "铺垫",
+            "chapter_hook_idea": "新的危机出现",
+        })
+    outline = json.dumps({
+        "genre": "都市脑洞",
+        "premise": "重生后靠信息差逆袭",
+        "theme": "逆袭与责任",
+        "target_length": "10万字",
+        "suggested_chapter_count": chapter_count,
+        "shuangdian_map": [],
+        "chapter_outlines": outlines,
+    }, ensure_ascii=False)
+    return world, characters, outline
+
+
+def test_foundation_gate_and_feedback_edge():
+    """Foundation generation must stop at a persisted gate and resume by decision."""
+    print("  Testing Foundation gate + feedback edge...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+
+    state = GraphNovelState(
+        project_id="foundation_gate",
+        novel_title="重生测试",
+        save_dir=Path(tempfile.mkdtemp()),
+        creative_genre="都市脑洞",
+        creative_premise="重生后靠信息差逆袭",
+        creative_theme="逆袭与责任",
+        target_total_words=100000,
+        target_total_chapters=2,
+        total_chapters=2,
+    )
+    engine = GraphNovelEngine(state)
+    engine.set_foundation_approval_callback(
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("generation must not wait for approval")
+        )
+    )
+    world, characters, outline = _foundation_llm_mocks(chapter_count=2)
+
+    with mock.patch("graph_novel.nodes.world_building.call_llm_sync", return_value=world), \
+         mock.patch("graph_novel.nodes.character_design.call_llm_sync", return_value=characters), \
+         mock.patch("graph_novel.nodes.outline_planning.call_llm_sync", return_value=outline) as outline_call:
+        result = engine.run_foundation_generation()
+
+        assert result.pending_gate == "foundation"
+        assert result.foundation_approval == ApprovalStatus.PENDING
+        assert result.workflow_phase == "foundation"
+        assert result.node_status["human_approval_foundation"] == NodeStatus.IN_PROGRESS
+        assert result.save().exists()
+
+        engine.apply_foundation_decision(False, "反派需要更强，主角不要圣母")
+        assert state.foundation_approval == ApprovalStatus.REJECTED
+        assert state.foundation_feedback == "反派需要更强，主角不要圣母"
+        assert state.pending_gate is None
+
+        engine.run_foundation_generation()
+        rerun_prompt = outline_call.call_args.args[1]
+        assert "反派需要更强" in rerun_prompt
+        assert state.pending_gate == "foundation"
+
+        engine.apply_foundation_decision(True, "")
+        assert state.foundation_approval == ApprovalStatus.APPROVED
+        assert state.workflow_phase == "chapter_loop"
+        assert state.pending_gate is None
+        assert len(state.chapters) == 2
+
+    try:
+        engine.apply_foundation_decision(True, "")
+        raise AssertionError("Expected invalid gate transition to fail")
+    except GraphExecutionError:
+        pass
+
+    print("✓ PASSED")
+
+
+def test_foundation_failure_stops_graph():
+    """A failed Foundation node must stop downstream routing."""
+    print("  Testing Foundation failure routing...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+
+    state = GraphNovelState(
+        project_id="foundation_failure",
+        novel_title="失败测试",
+        save_dir=Path(tempfile.mkdtemp()),
+        target_total_chapters=2,
+        total_chapters=2,
+    )
+    engine = GraphNovelEngine(state)
+
+    with mock.patch(
+            "graph_novel.nodes.world_building.run_node",
+            side_effect=RuntimeError("unexpected node crash"),
+         ), \
+         mock.patch("graph_novel.nodes.character_design.run_node") as character_node:
+        try:
+            engine.run_foundation_generation()
+            raise AssertionError("Expected GraphExecutionError")
+        except GraphExecutionError as exc:
+            assert exc.node_key == "world_building"
+
+    character_node.assert_not_called()
+    assert state.workflow_phase == "failed"
+    assert state.pending_gate is None
+    assert state.last_error["node"] == "world_building"
+    print("✓ PASSED")
+
+
+def test_project_inputs_and_legacy_state_migration():
+    """Creation inputs persist and version-1 State files gain safe defaults."""
+    print("  Testing project inputs + legacy migration...", end=" ")
+    from graph_novel.web.app import (
+        app as flask_app, _engines, _load_or_get_state, _states,
+    )
+
+    project_id = "input_persistence_test"
+    with flask_app.test_client() as client:
+        response = client.post("/create", data={
+            "title": "Input Persistence Test",
+            "genre": "悬疑无限流",
+            "genre_tags": "规则怪谈, 推理",
+            "premise": "每破解一条规则，现实就会改写一次",
+            "theme": "真相与代价",
+            "target_chapters": "12",
+            "target_words": "120000",
+            "notes": "主角必须依靠推理，而不是无脑碾压。",
+        })
+    assert response.status_code == 302
+    created = _states[project_id]
+    assert created.project_id == project_id
+    assert created.creative_genre == "悬疑无限流"
+    assert created.creative_premise == "每破解一条规则，现实就会改写一次"
+    assert created.creative_theme == "真相与代价"
+    assert created.target_total_chapters == 12
+    assert created.target_total_words == 120000
+    state_path = TEST_PROJECTS_DIR / project_id / f"{project_id}_state.json"
+    assert state_path.exists()
+
+    _states.pop(project_id)
+    _engines.pop(project_id, None)
+    reloaded_project = _load_or_get_state(project_id)
+    assert reloaded_project is not None
+    assert reloaded_project.creative_premise == created.creative_premise
+
+    legacy = make_sample_state()
+    legacy_data = legacy.to_dict()
+    for key in (
+        "project_id", "creative_genre", "creative_premise", "creative_theme",
+        "target_total_chapters", "workflow_phase", "pending_gate",
+        "foundation_approval", "foundation_feedback", "last_error",
+    ):
+        legacy_data.pop(key, None)
+    legacy_data["version"] = 1
+    legacy_path = Path(tempfile.mkdtemp()) / "legacy_state.json"
+    legacy_path.write_text(json.dumps(legacy_data, ensure_ascii=False), encoding="utf-8")
+
+    loaded = GraphNovelState.from_json(legacy_path)
+    assert loaded.version == 2
+    assert loaded.target_total_chapters == loaded.total_chapters
+    assert loaded.foundation_approval == ApprovalStatus.APPROVED
+    assert loaded.workflow_phase == "chapter_loop"
+    print("✓ PASSED")
+
+
+def test_foundation_web_api_contract():
+    """Web API returns an approval gate or a truthful node failure."""
+    print("  Testing Foundation Web API contract...", end=" ")
+    from graph_novel.web.app import (
+        app as flask_app, _engines, _list_projects, _states,
+    )
+
+    project_id = "foundation_web_api"
+    state = GraphNovelState(
+        project_id=project_id,
+        novel_title="Web Foundation",
+        save_dir=TEST_PROJECTS_DIR / project_id,
+        target_total_chapters=2,
+        total_chapters=2,
+    )
+    _states[project_id] = state
+    _engines.pop(project_id, None)
+    world, characters, outline = _foundation_llm_mocks(chapter_count=2)
+
+    with flask_app.test_client() as client, \
+         mock.patch("graph_novel.nodes.world_building.call_llm_sync", return_value=world), \
+         mock.patch("graph_novel.nodes.character_design.call_llm_sync", return_value=characters), \
+         mock.patch("graph_novel.nodes.outline_planning.call_llm_sync", return_value=outline):
+        response = client.post(f"/api/{project_id}/run-foundation")
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["success"] is True
+        assert payload["status"] == "awaiting_approval"
+
+        response = client.post(
+            f"/api/{project_id}/approve-foundation",
+            json={"approved": False, "feedback": ""},
+        )
+        assert response.status_code == 400
+
+        response = client.post(
+            f"/api/{project_id}/approve-foundation",
+            json={"approved": False, "feedback": "加强规则压迫感"},
+        )
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["next_action"] == "regenerate_foundation"
+        assert state.foundation_feedback == "加强规则压迫感"
+
+        page = client.get(f"/project/{project_id}/foundation")
+        assert page.status_code == 200
+        assert "加强规则压迫感" in page.get_data(as_text=True)
+
+        response = client.post(f"/api/{project_id}/run-foundation")
+        assert response.status_code == 200
+        response = client.post(
+            f"/api/{project_id}/approve-foundation",
+            json={"approved": True, "feedback": ""},
+        )
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["next_action"] == "chapters"
+        assert state.foundation_approval == ApprovalStatus.APPROVED
+        assert len(state.chapters) == 2
+        project_summary = next(
+            project for project in _list_projects()
+            if project["id"] == project_id
+        )
+        assert project_summary["chapters"] == 0
+
+    failure_id = "foundation_web_failure"
+    failed_state = GraphNovelState(
+        project_id=failure_id,
+        novel_title="Web Failure",
+        save_dir=TEST_PROJECTS_DIR / failure_id,
+        target_total_chapters=2,
+        total_chapters=2,
+    )
+    _states[failure_id] = failed_state
+    _engines.pop(failure_id, None)
+    with flask_app.test_client() as client, \
+         mock.patch("graph_novel.nodes.world_building.call_llm_sync", return_value="not-json"):
+        response = client.post(f"/api/{failure_id}/run-foundation")
+        payload = response.get_json()
+        assert response.status_code == 422
+        assert payload["success"] is False
+        assert payload["status"] == "failed"
+        assert payload["node"] == "world_building"
+
+    print("✓ PASSED")
+
+
 # ======================================================================
 # Main
 # ======================================================================
@@ -539,6 +830,10 @@ def run_all_tests():
         test_foreshadowing_tracker,
         test_web_app_config,
         test_web_api_state,
+        test_project_inputs_and_legacy_state_migration,
+        test_foundation_gate_and_feedback_edge,
+        test_foundation_failure_stops_graph,
+        test_foundation_web_api_contract,
     ]
 
     passed = 0

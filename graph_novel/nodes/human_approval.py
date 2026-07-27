@@ -8,6 +8,13 @@ and per-chapter final review.
 from graph_novel.state import GraphNovelState, NodeStatus, ApprovalStatus
 
 
+def request_foundation_decision(state: GraphNovelState, wait_callback=None):
+    """Collect a Foundation decision without mutating graph state."""
+    if wait_callback:
+        return wait_callback(state, stage="foundation")
+    return _cli_approval_foundation(state)
+
+
 def run_node(state: GraphNovelState, wait_callback=None) -> GraphNovelState:
     """
     Human approval gate.
@@ -50,12 +57,14 @@ def approve_foundation(state: GraphNovelState, wait_callback=None) -> GraphNovel
     state.log("Node 8 (Foundation): Human Approval — waiting for foundation review...")
     state.node_status["human_approval_foundation"] = NodeStatus.IN_PROGRESS
 
-    if wait_callback:
-        approved, feedback = wait_callback(state, stage="foundation")
-    else:
-        approved, feedback = _cli_approval_foundation(state)
+    approved, feedback = request_foundation_decision(state, wait_callback)
 
     state.node_status["human_approval_foundation"] = NodeStatus.COMPLETED
+    state.foundation_approval = (
+        ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
+    )
+    state.foundation_feedback = feedback
+    state.pending_gate = None
     state.log(f"Node 8 (Foundation): {'APPROVED' if approved else 'REJECTED'}")
 
     # If rejected, set all chapters to rejected

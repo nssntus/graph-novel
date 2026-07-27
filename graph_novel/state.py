@@ -12,6 +12,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+CURRENT_STATE_VERSION = 2
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -137,17 +139,29 @@ class GraphNovelState:
     """The single shared state that flows through every node in the DAG."""
 
     # -- Project metadata
+    project_id: str = ""
     novel_title: str = ""
     save_dir: Path = field(default_factory=Path.cwd)
     target_platform: str = "fanqie"  # fanqie | qidian | general
+    creative_genre: str = ""
+    creative_premise: str = ""
+    creative_theme: str = ""
     genre_tags: List[str] = field(default_factory=list)  # e.g. ["都市", "脑洞", "系统流"]
     target_total_words: int = 500000  # total word count target for the novel
+    target_total_chapters: int = 0
     creative_notes: str = ""  # user's creative direction notes from project creation
 
     # -- Phase 1: Foundation (human approval gate)
     world_setting: Optional[WorldSetting] = None
     characters: List[Character] = field(default_factory=list)
     novel_outline: Optional[NovelOutline] = None
+    foundation_approval: ApprovalStatus = ApprovalStatus.PENDING
+    foundation_feedback: str = ""
+
+    # -- Persisted graph checkpoint
+    workflow_phase: str = "foundation"
+    pending_gate: Optional[str] = None
+    last_error: Dict[str, Any] = field(default_factory=dict)
 
     # -- Phase 2: Chapter pipeline
     chapters: List[Chapter] = field(default_factory=list)
@@ -170,7 +184,7 @@ class GraphNovelState:
 
     # -- Metadata
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    version: int = 1
+    version: int = CURRENT_STATE_VERSION
 
     # ------------------------------------------------------------------
     # Serialization helpers
@@ -190,12 +204,15 @@ class GraphNovelState:
 
     @classmethod
     def from_json(cls, path: Union[str, Path]) -> "GraphNovelState":
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return _deserialize(data)
+        source = Path(path)
+        data = json.loads(source.read_text(encoding="utf-8"))
+        state = _deserialize(data)
+        if not isinstance(state, cls):
+            raise ValueError(f"State file does not contain {cls.__name__}")
+        return _migrate_state(state, source)
 
-    @staticmethod
-    def _safe_title() -> str:
-        return "graph_novel"
+    def _safe_title(self) -> str:
+        return self.project_id or "graph_novel"
 
     def log(self, message: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
@@ -273,10 +290,51 @@ def _deserialize_field(value: Any, field_type: Any) -> Any:
         inner_type = args[0] if args else str
         return [_deserialize_field(v, inner_type) for v in value]
     if origin is dict:
-        return _deserialize(value)
+        args = getattr(field_type, "__args__", ())
+        value_type = args[1] if len(args) > 1 else Any
+        return {
+            k: _deserialize_field(v, value_type)
+            for k, v in value.items()
+        }
     if isinstance(field_type, type) and issubclass(field_type, Path):
         return Path(value)
     # Might be a nested dataclass
     if isinstance(value, dict) and "__model__" in value:
         return _deserialize(value)
     return value
+
+
+def _migrate_state(state: GraphNovelState, source: Path) -> GraphNovelState:
+    """Fill version-2 checkpoint fields when loading older project files."""
+    if not state.project_id:
+        stem = source.stem
+        if stem.endswith("_state") and stem != "graph_novel_state":
+            state.project_id = stem[:-6]
+
+    if state.target_total_chapters <= 0:
+        state.target_total_chapters = state.total_chapters
+
+    if state.version < 2:
+        foundation_status = state.node_status.get(
+            "human_approval_foundation", NodeStatus.PENDING
+        )
+        if foundation_status == NodeStatus.COMPLETED:
+            rejected = any(
+                chapter.approval == ApprovalStatus.REJECTED
+                for chapter in state.chapters
+            )
+            state.foundation_approval = (
+                ApprovalStatus.REJECTED if rejected else ApprovalStatus.APPROVED
+            )
+        elif foundation_status == NodeStatus.IN_PROGRESS:
+            state.pending_gate = "foundation"
+
+        if state.node_status.get("global_review") == NodeStatus.COMPLETED:
+            state.workflow_phase = "done"
+        elif state.foundation_approval == ApprovalStatus.APPROVED:
+            state.workflow_phase = "chapter_loop"
+        else:
+            state.workflow_phase = "foundation"
+
+    state.version = CURRENT_STATE_VERSION
+    return state

@@ -35,7 +35,9 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Optional
 
-from graph_novel.state import GraphNovelState, NodeStatus, ApprovalStatus
+from graph_novel.state import (
+    GraphNovelState, NodeStatus, ApprovalStatus, Chapter,
+)
 from graph_novel.nodes import (
     world_building,
     character_design,
@@ -54,6 +56,20 @@ class GraphPhase(Enum):
     CHAPTER_LOOP = auto()
     GLOBAL_REVIEW = auto()
     DONE = auto()
+
+
+class GraphExecutionError(RuntimeError):
+    """Raised when a node fails or an invalid graph transition is requested."""
+
+    def __init__(
+        self,
+        node_key: str,
+        message: str,
+        code: str = "execution_failed",
+    ):
+        super().__init__(message)
+        self.node_key = node_key
+        self.code = code
 
 
 class GraphNovelEngine:
@@ -131,26 +147,104 @@ class GraphNovelEngine:
     # ------------------------------------------------------------------
 
     def _run_foundation(self) -> None:
+        """CLI/full-run wrapper: generate, collect a decision, then transition."""
+        self.run_foundation_generation()
+        approved, feedback = human_approval.request_foundation_decision(
+            self.state,
+            wait_callback=self._foundation_approval_callback,
+        )
+        self.apply_foundation_decision(approved, feedback)
+
+    def run_foundation_generation(self) -> GraphNovelState:
+        """Run Foundation nodes and stop at the persisted human approval gate."""
+        if (
+            self.state.pending_gate == "foundation"
+            and self.state.foundation_approval == ApprovalStatus.PENDING
+        ):
+            raise GraphExecutionError(
+                "human_approval_foundation",
+                "Foundation is already waiting for approval.",
+                code="invalid_transition",
+            )
+        if self.state.foundation_approval == ApprovalStatus.APPROVED:
+            raise GraphExecutionError(
+                "human_approval_foundation",
+                "Approved Foundation cannot be regenerated.",
+                code="invalid_transition",
+            )
+
         self.phase = GraphPhase.FOUNDATION
+        self.state.workflow_phase = "foundation"
+        self.state.pending_gate = None
+        self.state.foundation_approval = ApprovalStatus.PENDING
+        self.state.last_error = {}
         self.state.log("="*50)
         self.state.log("PHASE 1: Foundation")
 
         # Node 1: World-Building
-        self.state = world_building.run_node(self.state)
+        self._execute_required_node("world_building", world_building.run_node)
 
         # Node 2: Character Design (can run after world-building)
-        self.state = character_design.run_node(self.state)
+        self._execute_required_node("character_design", character_design.run_node)
 
         # Node 3: Outline Planning (needs world + characters)
-        self.state = outline_planning.run_node(self.state)
+        self._execute_required_node("outline_planning", outline_planning.run_node)
 
-        # Node 8: Foundation Approval
-        self.state = human_approval.approve_foundation(
-            self.state,
-            wait_callback=self._foundation_approval_callback,
+        # Node 8 is now a persisted Gate. A separate decision resumes the graph.
+        self.state.node_status["human_approval_foundation"] = NodeStatus.IN_PROGRESS
+        self.state.pending_gate = "foundation"
+        self.state.save()
+        self.state.log("Foundation generated — awaiting human approval.")
+        return self.state
+
+    def apply_foundation_decision(
+        self,
+        approved: bool,
+        feedback: str = "",
+    ) -> GraphNovelState:
+        """Resume the graph from the Foundation approval gate."""
+        if (
+            self.state.pending_gate != "foundation"
+            or self.state.node_status.get("human_approval_foundation")
+            != NodeStatus.IN_PROGRESS
+        ):
+            raise GraphExecutionError(
+                "human_approval_foundation",
+                "Foundation is not waiting for approval.",
+                code="invalid_transition",
+            )
+
+        self.state.foundation_approval = (
+            ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
         )
+        self.state.foundation_feedback = feedback.strip()
+        self.state.node_status["human_approval_foundation"] = NodeStatus.COMPLETED
+        self.state.pending_gate = None
+
+        if approved:
+            self.state.workflow_phase = "chapter_loop"
+            for ch_num in range(1, self.state.total_chapters + 1):
+                if len(self.state.chapters) < ch_num:
+                    self.state.chapters.append(
+                        Chapter(chapter_number=ch_num, title=f"第{ch_num}章")
+                    )
+            self.state.log("Foundation approved — chapter pipeline is ready.")
+        else:
+            self.state.workflow_phase = "foundation"
+            self.state.log(
+                "Foundation rejected — feedback saved for regeneration."
+            )
+
+        self.state.save()
+        return self.state
 
     def _is_foundation_approved(self) -> bool:
+        if self.state.foundation_approval == ApprovalStatus.APPROVED:
+            return True
+        if self.state.foundation_approval == ApprovalStatus.REJECTED:
+            return False
+
+        # Backward-compatible fallback for version-1 in-memory fixtures.
         status = self.state.node_status.get(
             "human_approval_foundation", NodeStatus.PENDING
         )
@@ -162,6 +256,32 @@ class GraphNovelEngine:
             if ch.approval == ApprovalStatus.REJECTED:
                 return False
         return True
+
+    def _require_completed(self, node_key: str) -> None:
+        """Stop routing immediately when a required node did not complete."""
+        if self.state.node_status.get(node_key) == NodeStatus.COMPLETED:
+            return
+
+        previous_error = self.state.last_error
+        if previous_error.get("node") == node_key:
+            message = previous_error.get("message", f"Node {node_key} failed.")
+        else:
+            message = f"Required node {node_key} did not complete."
+            self.state.last_error = {"node": node_key, "message": message}
+
+        self.state.workflow_phase = "failed"
+        self.state.pending_gate = None
+        self.state.save()
+        raise GraphExecutionError(node_key, message)
+
+    def _execute_required_node(self, node_key: str, runner) -> None:
+        """Execute one Foundation node and normalize unexpected exceptions."""
+        try:
+            self.state = runner(self.state)
+        except Exception as exc:
+            self.state.node_status[node_key] = NodeStatus.FAILED
+            self.state.last_error = {"node": node_key, "message": str(exc)}
+        self._require_completed(node_key)
 
     # ------------------------------------------------------------------
     # Phase 2: Chapter Pipeline

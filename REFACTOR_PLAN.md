@@ -1,6 +1,6 @@
 # GraphNovel 改造与修复计划
 
-**状态**：规划完成，待按批次实施  
+**状态**：批次 0、批次 1 及 Foundation Gate 首轮改造完成
 **制定日期**：2026-07-27  
 **原则**：先恢复正确性，再增强图运行时，最后优化模型质量和体验。
 
@@ -72,11 +72,11 @@ flowchart TD
 
 任务：
 
-- [ ] 经用户确认后初始化 Git，并提交当前基线。
-- [ ] 完善 `.gitignore`，排除 `.env`、`.venv`、`.DS_Store`、缓存和运行产物。
-- [ ] 保留现有 9 项测试作为回归基线。
-- [ ] Web 测试统一把 `GRAPH_NOVEL_DIR` 指向临时目录。
-- [ ] 为已确认的 P0 行为先添加失败测试。
+- [x] 经用户确认后初始化 Git，并提交当前基线。
+- [x] 完善 `.gitignore`，排除 `.env`、`.venv`、`.DS_Store`、缓存和运行产物。
+- [x] 保留现有 9 项测试作为回归基线。
+- [x] Web 测试统一把 `GRAPH_NOVEL_DIR` 指向临时目录。
+- [x] 为已确认的 P0 行为先添加失败测试。
 
 成功标准：
 
@@ -101,11 +101,11 @@ flowchart TD
 
 任务：
 
-- [ ] 保存创建表单的 genre、premise、theme、目标字数和目标章数。
-- [ ] Foundation 节点 Prompt 明确使用这些字段。
-- [ ] 为工作流阶段、待审批 Gate 和错误提供可序列化字段。
-- [ ] 将 State `version` 升级，并保证旧版存档缺少新字段时使用安全默认值。
-- [ ] 明确“用户目标章数”和“模型实际生成章数”的校验规则。
+- [x] 保存创建表单的 genre、premise、theme、目标字数和目标章数。
+- [x] Foundation 节点 Prompt 明确使用这些字段。
+- [x] 为工作流阶段、待审批 Gate 和错误提供可序列化字段。
+- [x] 将 State `version` 升级，并保证旧版存档缺少新字段时使用安全默认值。
+- [x] 明确“用户目标章数”和“模型实际生成章数”的校验规则。
 
 成功标准：
 
@@ -119,7 +119,7 @@ flowchart TD
 
 任务：
 
-- [ ] 将 Foundation 的“生成 Nodes 1-3”和“Node 8 决策”拆成两个 Engine 动作。
+- [x] 将 Foundation 的“生成 Nodes 1-3”和“Node 8 决策”拆成两个 Engine 动作。
 - [ ] 将章节的“生成 Nodes 4-7”和“Node 8 决策”拆成两个 Engine 动作。
 - [ ] 每次执行到 Gate 时保存 State 并立即返回，不在 Engine/Web 中等待用户。
 - [ ] 批准、驳回、低分、节点失败分别对应显式转换。
@@ -249,3 +249,16 @@ flowchart TD
 - 是否调用真实 API；
 - 发现但未处理的风险；
 - 下一批入口条件。
+
+### 2026-07-27：第一轮 Foundation 闭环
+
+- 完成批次 0 和批次 1。
+- Foundation 生成与审批已拆分；生成到 Gate 后持久化并返回，不再等待审批事件。
+- Foundation 批准、驳回、重复决策和节点失败已形成显式状态转换。
+- 驳回反馈会进入下一轮世界观、人物和大纲 Prompt。
+- State 升级到 v2，并修复 `Dict[str, Enum]` 反序列化问题。
+- 项目存档使用真实 `project_id` 文件名，同时兼容旧 `graph_novel_state.json`。
+- 基础测试从 9 项扩展到 13 项：`python3 tests/test_integration.py`，13/13 通过。
+- 浏览器验证待生成、已批准和首页进度状态通过；驳回页面由 Flask 渲染测试覆盖。
+- 未调用真实 DeepSeek API。
+- 下一批入口：按相同模式拆分章节生成与 Chapter Gate，并修复重写反馈和副作用提交时机。

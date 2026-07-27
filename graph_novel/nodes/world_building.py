@@ -47,13 +47,20 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     combined_notes = (existing_notes + '\n' + creative_notes).strip() or '写一部脑洞大开的爽文，主角拥有独特的金手指，节奏快，爽点密集。'
     genre_tags = ", ".join(state.genre_tags) if state.genre_tags else "未指定"
     target_platform = getattr(state, 'target_platform', 'fanqie')
+    foundation_feedback = state.foundation_feedback or "无"
 
     user_prompt = f"""为一部番茄小说创建世界设定。
 
 书名：{state.novel_title}
+用户指定题材：{state.creative_genre or '未指定'}
 题材标签：{genre_tags}
+用户的一句话卖点：{state.creative_premise or '未指定'}
+用户的核心爽点方向：{state.creative_theme or '未指定'}
 目标平台：{target_platform}
+目标总字数：{state.target_total_words}
+目标章数：{state.target_total_chapters or state.total_chapters}
 创作方向：{combined_notes}
+上一轮 Foundation 修改意见：{foundation_feedback}
 
 生成完整世界设定 JSON。"""
 
@@ -77,6 +84,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         state.log("节点1: 世界观构建 — 完成。")
     except Exception as e:
         state.node_status["world_building"] = NodeStatus.FAILED
+        state.last_error = {"node": "world_building", "message": str(e)}
         state.log(f"节点1: 世界观构建 — 失败: {e}")
 
     return state

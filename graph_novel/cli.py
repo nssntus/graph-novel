@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from graph_novel.state import GraphNovelState, WorldSetting
+from graph_novel.state import GraphNovelState
 from graph_novel.engine import GraphNovelEngine
 
 
@@ -50,11 +50,17 @@ def main():
     save_dir = output_dir / project_id
 
     state = GraphNovelState(
+        project_id=project_id,
         novel_title=args.title,
         save_dir=save_dir,
+        creative_genre=args.genre,
+        creative_premise=args.premise,
+        creative_theme=args.theme,
+        genre_tags=[args.genre],
+        target_total_chapters=args.chapters,
+        creative_notes=args.notes,
         total_chapters=args.chapters,
     )
-    state.world_setting = WorldSetting(era="", location="", notes=args.notes)
 
     engine = GraphNovelEngine(state)
     engine.set_output_dir(save_dir / "output")
