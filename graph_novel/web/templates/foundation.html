@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ state.novel_title }} — Foundation — 番茄小说工坊</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1><a href="/">🍅 番茄小说工坊</a></h1>
+  <nav>
+    <a href="/project/{{ project_id }}">面板</a>
+    <a href="/project/{{ project_id }}/foundation" class="active">Foundation</a>
+    <a href="/project/{{ project_id }}/chapters">章节</a>
+    <a href="/project/{{ project_id }}/review">终审</a>
+  </nav>
+</header>
+    <a href="/project/{{ project_id }}/review">Review</a>
+  </nav>
+</header>
+
+<div class="container">
+  <div class="flex justify-between items-center mb-2">
+    <h2 style="font-weight: normal; font-size: 1.5rem;">{{ state.novel_title }} — Foundation</h2>
+    <span class="badge {% if state.world_setting and state.world_setting.era %}badge-completed{% else %}badge-pending{% endif %}">
+      {{ "已完成" if (state.world_setting and state.world_setting.era) else "待生成" }}
+    </span>
+  </div>
+
+  <p class="muted mb-2">🍅 Phase 1：Foundation 阶段构建世界观、角色阵容和金手指设定、爽点排期大纲。此阶段需要你审批后才能开始逐章写作。</p>
+
+  <!-- Generate Foundation Button -->
+  <div id="generate-section" class="card text-center" style="padding: 2rem; {% if state.world_setting and state.world_setting.era %}display:none{% endif %}">
+    <h3 style="margin-bottom: 1rem;">🚀 生成 Foundation</h3>
+    <p class="muted mb-2">运行 3 个 AI Agent：世界观构建 → 人物设计 → 大纲规划（含黄金三章 + 爽点排期）。预计 1-3 分钟。</p>
+    <button class="btn btn-primary" onclick="generateFoundation()" id="generate-btn">
+      <span id="generate-spinner" class="spinner" style="display:none"></span>
+      生成 Foundation
+    </button>
+    <div id="generate-status" class="mt-2"></div>
+  </div>
+
+  <!-- Foundation Results -->
+  <div id="foundation-results" {% if not (state.world_setting and state.world_setting.era) %}style="display:none"{% endif %}>
+    <!-- World Setting -->
+    <div class="card">
+      <h2>🍅 核心设定</h2>
+      {% if state.world_setting and state.world_setting.era %}
+      <div class="grid grid-2">
+        <div>
+          <p><strong>时代：</strong> {{ state.world_setting.era }}</p>
+          <p><strong>地点：</strong> {{ state.world_setting.location }}</p>
+          <p><strong>核心设定：</strong> {{ state.world_setting.magic_system or '暂无' }}</p>
+          <p><strong>科技水平：</strong> {{ state.world_setting.technology_level or '标准' }}</p>
+        </div>
+        <div>
+          <p><strong>社会结构：</strong> {{ state.world_setting.social_structure[:200] }}</p>
+          <p><strong>背景历史：</strong> {{ state.world_setting.history[:200] }}</p>
+          <p><strong>补充说明：</strong> {{ state.world_setting.notes[:150] }}</p>
+        </div>
+      </div>
+      {% if state.world_setting and state.world_setting.era and state.world_setting.key_locations %}
+      <h3 class="mt-2">Key Locations</h3>
+      <div class="grid grid-2">
+        {% for loc in state.world_setting.key_locations %}
+        <div class="card">
+          <strong>{{ loc.name }}</strong>
+          <p class="muted">{{ loc.description[:150] }}</p>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endif %}
+    </div>
+
+    <!-- Characters -->
+    <div class="card">
+      <h2>👥 角色阵容（{{ state.characters|length }}人）</h2>
+      {% if state.characters %}
+      <div class="grid grid-2">
+        {% for char in state.characters %}
+        <div class="card">
+          <h3>{{ char.name }} <span class="badge badge-pending">{{ char.role }}</span></h3>
+          <p class="muted">{{ char.motivation[:150] }}</p>
+          {% if char.arc %}
+          <p class="muted mt-1"><strong>Arc:</strong> {{ char.arc.arc_description[:100] }}</p>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Outline -->
+    <div class="card">
+      <h2>📋 章节大纲 + 爽点排期</h2>
+      {% if state.novel_outline %}
+      <p><strong>题材：</strong> {{ state.novel_outline.genre }}</p>
+      <p><strong>一句话卖点：</strong> {{ state.novel_outline.premise }}</p>
+      <p><strong>主题：</strong> {{ state.novel_outline.theme }}</p>
+      <p><strong>目标：</strong> {{ state.novel_outline.target_length }}</p>
+      <p><strong>章数：</strong> {{ state.novel_outline.chapter_outlines|length }}</p>
+
+      {% if state.novel_outline.shuangdian_map %}
+      <details class="mt-2">
+        <summary style="cursor: pointer; color: var(--accent);">🍅 爽点排期表</summary>
+        <div class="mt-1">
+          {% for item in state.novel_outline.shuangdian_map %}
+          <p class="muted">📌 {{ item.get('chapter_range','') }} → {{ item.get('type','') }}：{{ item.get('description','')[:100] }}</p>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+
+      <details class="mt-2">
+        <summary style="cursor: pointer; color: var(--accent);">View Chapter Outlines</summary>
+        <div class="mt-1">
+          {% for co in state.novel_outline.chapter_outlines %}
+          <div class="card">
+            <h3>Ch{{ co.chapter_number }}: {{ co.title }}</h3>
+            <p class="muted">{{ co.summary }}</p>
+            {% if co.key_events %}
+            <p class="muted mt-1">Key events: {{ co.key_events|join('; ') }}</p>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+
+    <!-- Approval Section -->
+    <div id="approval-section" class="card" style="background: #fdf8f0; border-color: var(--accent);">
+      <h2>✋ 审批确认</h2>
+      <p class="muted mb-2">请审阅以上 Foundation 内容：世界观、角色阵容（含金手指）、大纲和爽点排期。审批通过后进入逐章写作。</p>
+
+      <div class="form-group">
+        <label for="feedback">修改意见 / 审批备注</label>
+        <textarea id="feedback" rows="3" placeholder="哪里需要改？想要什么调整？或者直接写'满意通过'……"></textarea>
+      </div>
+
+      <div class="flex gap-1">
+        <button class="btn btn-success" onclick="approveFoundation(true)">✓ 通过，开始写作</button>
+        <button class="btn btn-danger" onclick="approveFoundation(false)">✗ 不通过，需要修改</button>
+      </div>
+      <div id="approval-status" class="mt-2"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const projectId = "{{ project_id }}";
+
+async function generateFoundation() {
+  const btn = document.getElementById('generate-btn');
+  const spinner = document.getElementById('generate-spinner');
+  const status = document.getElementById('generate-status');
+
+  btn.disabled = true;
+  spinner.style.display = 'inline-block';
+  status.innerHTML = '<p class="muted">正在运行 AI Agent：世界观构建、人物设计（含金手指）、爽点大纲规划……</p>';
+
+  try {
+    const resp = await fetch(`/api/${projectId}/run-foundation`, { method: 'POST' });
+    const data = await resp.json();
+
+    if (data.success) {
+      status.innerHTML = '<p class="alert alert-success">Foundation 已生成！请在下方审阅。</p>';
+      document.getElementById('generate-section').style.display = 'none';
+      document.getElementById('foundation-results').style.display = 'block';
+      location.reload();
+    } else {
+      status.innerHTML = `<p class="alert alert-error">Error: ${data.error || 'Unknown error'}</p>`;
+      btn.disabled = false;
+      spinner.style.display = 'none';
+    }
+  } catch (err) {
+    status.innerHTML = `<p class="alert alert-error">Connection error: ${err.message}</p>`;
+    btn.disabled = false;
+    spinner.style.display = 'none';
+  }
+}
+
+async function approveFoundation(approved) {
+  const status = document.getElementById('approval-status');
+  const feedback = document.getElementById('feedback').value;
+
+  status.innerHTML = '<p class="muted">Processing...</p>';
+
+  try {
+    const resp = await fetch(`/api/${projectId}/approve-foundation`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ approved, feedback })
+    });
+    const data = await resp.json();
+
+    if (data.success) {
+      if (approved) {
+        status.innerHTML = '<p class="alert alert-success">Foundation 已通过！即将跳转到章节页面……</p>';
+        setTimeout(() => { window.location.href = `/project/${projectId}/chapters`; }, 1500);
+      } else {
+        status.innerHTML = '<p class="alert alert-error">Foundation 被驳回。AI 将根据你的意见重新生成。</p>';
+      }
+    }
+  } catch (err) {
+    status.innerHTML = `<p class="alert alert-error">Error: ${err.message}</p>`;
+  }
+}
+</script>
+<script src="/static/chat.js"></script>
+</body>
+</html>

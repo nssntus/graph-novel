@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ state.novel_title }} — 章节 — 番茄小说工坊</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1><a href="/">🍅 番茄小说工坊</a></h1>
+  <nav>
+    <a href="/project/{{ project_id }}">面板</a>
+    <a href="/project/{{ project_id }}/foundation">Foundation</a>
+    <a href="/project/{{ project_id }}/chapters" class="active">章节</a>
+    <a href="/project/{{ project_id }}/review">终审</a>
+  </nav>
+</header>
+
+<div class="container container-wide">
+  <div class="flex justify-between items-center mb-2">
+    <h2 style="font-weight: normal; font-size: 1.5rem;">{{ state.novel_title }} — 章节写作</h2>
+    {% set written = state.chapters|selectattr('polished_draft')|list|length %}
+    <span class="muted">{{ written }}/{{ state.total_chapters }} 章已完成</span>
+  </div>
+
+  {% if state.total_chapters > 0 %}
+  <div class="progress-bar">
+    {% set pct = (written / state.total_chapters * 100)|int %}
+    <div class="progress-fill" style="width: {{ pct }}%"></div>
+  </div>
+  {% endif %}
+
+  <!-- Chapter Grid -->
+  <div class="grid grid-3 mt-2">
+    {% for ch_num in range(1, state.total_chapters + 1) %}
+      {% set ch = state.chapters[ch_num - 1] if ch_num <= state.chapters|length else None %}
+      <div class="card" id="chapter-card-{{ ch_num }}">
+        <div class="flex justify-between items-center">
+          <h3>第{{ ch_num }}章{% if ch and ch.title %}：{{ ch.title[:20] }}{% endif %}</h3>
+          {% if ch and ch.polished_draft %}
+            <span class="badge badge-approved">已完成</span>
+          {% elif ch and ch.draft %}
+            <span class="badge badge-in-progress">草稿</span>
+          {% else %}
+            <span class="badge badge-pending">待写</span>
+          {% endif %}
+        </div>
+
+        {% if ch %}
+          {% if ch.word_count > 0 %}
+          <p class="muted">{{ ch.word_count }} 字</p>
+          {% endif %}
+          {% if ch.shuangdian_type %}
+          <p class="muted">🍅 {{ ch.shuangdian_type }}</p>
+          {% endif %}
+          {% if ch.consistency_report and ch.consistency_report.get('overall_score') %}
+          <p class="muted">审稿：{{ ch.consistency_report.overall_score }}/10</p>
+          {% endif %}
+          {% if ch.chapter_hook %}
+          <p class="muted" style="font-size:0.75rem;">钩子：{{ ch.chapter_hook[:30] }}</p>
+          {% endif %}
+        {% endif %}
+
+        <div class="flex gap-1 mt-1">
+          {% if not ch or not ch.polished_draft %}
+            <button class="btn btn-primary btn-sm" onclick="runChapter({{ ch_num }})">
+              写这章
+            </button>
+          {% else %}
+            <button class="btn btn-sm" onclick="viewChapter({{ ch_num }})">
+              阅读
+            </button>
+          {% endif %}
+        </div>
+
+        <div id="chapter-status-{{ ch_num }}" class="mt-1"></div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <!-- Run All Remaining -->
+  <div class="card text-center mt-2" style="padding: 2rem;" id="run-all-section">
+    <h3>批量写作剩余章节</h3>
+    <p class="muted mb-2">逐章跑完完整管线（规划→写作→毒舌审稿→润色→待审批）。每章约1-3分钟。</p>
+    <button class="btn btn-primary" onclick="runAllChapters()" id="run-all-btn">
+      批量写作
+    </button>
+    <div id="run-all-status" class="mt-2"></div>
+  </div>
+
+  {% if written == state.total_chapters and state.total_chapters > 0 %}
+  <div class="text-center mt-2">
+    <a href="/project/{{ project_id }}/review" class="btn btn-primary">运行全局终审</a>
+    <a href="/download/{{ project_id }}/novel" class="btn">下载完整小说 (.md)</a>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Chapter View Modal -->
+<div id="chapter-modal" style="display:none; position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5); z-index:1000; overflow-y:auto;">
+  <div style="max-width:800px; margin:2rem auto; background:var(--card-bg); border-radius:var(--radius); padding:2rem;">
+    <div class="flex justify-between items-center mb-2">
+      <h2 id="modal-title"></h2>
+      <div class="flex gap-1">
+        <span id="modal-meta" class="muted" style="font-size:0.8rem;"></span>
+        <button class="btn btn-sm" onclick="closeModal()">✕ 关闭</button>
+      </div>
+    </div>
+    <div id="modal-content" class="prose"></div>
+    <div id="modal-approval" class="mt-2" style="border-top: 1px solid var(--border); padding-top: 1rem;">
+      <div class="form-group">
+        <label>审批意见</label>
+        <textarea id="modal-feedback" rows="2" placeholder="这里写反馈……或者直接留空=通过"></textarea>
+      </div>
+      <div class="flex gap-1">
+        <button class="btn btn-success btn-sm" onclick="approveFromModal(true)" id="modal-approve-btn">✓ 通过</button>
+        <button class="btn btn-danger btn-sm" onclick="approveFromModal(false)">✗ 驳回重写</button>
+      </div>
+      <div id="modal-approval-status" class="mt-1"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const projectId = "{{ project_id }}";
+let currentViewChapter = 0;
+
+async function runChapter(chNum) {
+  const status = document.getElementById(`chapter-status-${chNum}`);
+  status.innerHTML = '<span class="spinner"></span> <span class="muted">正在写第' + chNum + '章……</span>';
+
+  try {
+    const resp = await fetch(`/api/${projectId}/run-chapter/${chNum}`, { method: 'POST' });
+    const data = await resp.json();
+
+    if (data.success && data.chapter) {
+      const wc = data.chapter.word_count || 0;
+      const score = data.chapter.consistency_score || '?';
+      status.innerHTML = '<p class="alert alert-success">完成（' + wc + '字）| 审稿' + score + '/10</p>';
+      currentViewChapter = chNum;
+      document.getElementById('modal-title').textContent = '第' + chNum + '章：' + (data.chapter.title || '');
+      document.getElementById('modal-meta').textContent = wc + '字 | 审稿' + score + '/10';
+      document.getElementById('modal-content').innerHTML = formatProse(data.chapter.draft);
+      document.getElementById('modal-approval').style.display = 'block';
+      document.getElementById('chapter-modal').style.display = 'block';
+
+      const card = document.getElementById('chapter-card-' + chNum);
+      const badge = card.querySelector('.badge');
+      if (badge) {
+        badge.textContent = '已完成';
+        badge.className = 'badge badge-approved';
+      }
+    } else {
+      status.innerHTML = '<p class="alert alert-error">失败：' + (data.error || '未知错误') + '</p>';
+    }
+  } catch (err) {
+    status.innerHTML = '<p class="alert alert-error">连接错误：' + err.message + '</p>';
+  }
+}
+
+async function viewChapter(chNum) {
+  currentViewChapter = chNum;
+  try {
+    const resp = await fetch('/api/' + projectId + '/chapter/' + chNum);
+    const data = await resp.json();
+    if (data.number) {
+      document.getElementById('modal-title').textContent = '第' + chNum + '章：' + data.title;
+      document.getElementById('modal-meta').textContent = (data.word_count || 0) + '字';
+      document.getElementById('modal-content').innerHTML = formatProse(data.polished || data.draft);
+      document.getElementById('chapter-modal').style.display = 'block';
+      if (data.approval === 'pending') {
+        document.getElementById('modal-approval').style.display = 'block';
+      } else {
+        document.getElementById('modal-approval').style.display = 'none';
+      }
+    }
+  } catch (err) {
+    alert('加载章节失败：' + err.message);
+  }
+}
+
+async function approveFromModal(approved) {
+  const status = document.getElementById('modal-approval-status');
+  const feedback = document.getElementById('modal-feedback').value;
+  try {
+    const resp = await fetch('/api/' + projectId + '/approve-chapter/' + currentViewChapter, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ approved, feedback })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      status.innerHTML = approved
+        ? '<p class="alert alert-success">第' + currentViewChapter + '章已通过！</p>'
+        : '<p class="alert alert-error">第' + currentViewChapter + '章已驳回，需要重写。</p>';
+      document.getElementById('modal-approval').style.display = 'none';
+      setTimeout(closeModal, 1500);
+      setTimeout(function(){ location.reload(); }, 2000);
+    }
+  } catch (err) {
+    status.innerHTML = '<p class="alert alert-error">错误：' + err.message + '</p>';
+  }
+}
+
+async function runAllChapters() {
+  const status = document.getElementById('run-all-status');
+  const btn = document.getElementById('run-all-btn');
+  btn.disabled = true;
+  for (let chNum = 1; chNum <= {{ state.total_chapters }}; chNum++) {
+    const chCard = document.getElementById('chapter-card-' + chNum);
+    if (!chCard) continue;
+    const badge = chCard.querySelector('.badge');
+    if (badge && badge.textContent.trim() === '待写') {
+      status.innerHTML = '<p class="muted"><span class="spinner"></span> 正在写第' + chNum + '章……</p>';
+      await runChapter(chNum);
+    }
+  }
+  status.innerHTML = '<p class="alert alert-success">全部章节写作完成！</p>';
+  btn.disabled = false;
+  location.reload();
+}
+
+function closeModal() {
+  document.getElementById('chapter-modal').style.display = 'none';
+}
+
+function formatProse(text) {
+  if (!text) return '<p>暂无内容。</p>';
+  return text
+    .split('\n\n')
+    .filter(function(p){ return p.trim(); })
+    .map(function(p){
+      if (p.trim() === '***') return '<p style="text-align:center;color:var(--text-secondary);">✦ ✦ ✦</p>';
+      return '<p>' + p + '</p>';
+    })
+    .join('');
+}
+</script>
+<script src="/static/chat.js"></script>
+</body>
+</html>

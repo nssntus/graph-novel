@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ state.novel_title }} — 项目面板 — 番茄小说工坊</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1><a href="/">🍅 番茄小说工坊</a></h1>
+  <nav>
+    <a href="/project/{{ project_id }}" class="active">面板</a>
+    <a href="/project/{{ project_id }}/foundation">Foundation</a>
+    <a href="/project/{{ project_id }}/chapters">章节</a>
+    <a href="/project/{{ project_id }}/review">终审</a>
+  </nav>
+</header>
+
+<div class="container">
+  <div class="flex justify-between items-center mb-2">
+    <h2 style="font-weight: normal; font-size: 1.5rem;">{{ state.novel_title }}</h2>
+    <div class="flex gap-1">
+      <a href="/download/{{ project_id }}/state" class="btn btn-sm">状态 JSON</a>
+      <a href="/download/{{ project_id }}/novel" class="btn btn-sm">下载 .md</a>
+    </div>
+  </div>
+
+  {% if state.novel_outline %}
+  <div class="card mb-2">
+    <p><strong>{{ state.novel_outline.genre }}</strong></p>
+    <p class="mt-1">{{ state.novel_outline.premise }}</p>
+    <p class="muted mt-1">主题：{{ state.novel_outline.theme }}</p>
+    {% if state.novel_outline.shuangdian_map %}
+    <details class="mt-1">
+      <summary style="cursor:pointer;color:var(--accent);">🍅 爽点排期表</summary>
+      <div class="mt-1">
+        {% for item in state.novel_outline.shuangdian_map %}
+        <p class="muted" style="font-size:0.8rem">{{ item.get('chapter_range','') }} | {{ item.get('type','') }} | {{ item.get('description','')[:80] }}</p>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Progress Overview -->
+  <div class="grid grid-2 mb-2">
+    <div class="card text-center">
+      <h3>已写章节</h3>
+      <p style="font-size: 2rem; color: var(--accent);">
+        {% set written = state.chapters|selectattr('polished_draft')|list|length %}
+        {{ written }}
+      </p>
+      <p class="muted">/ {{ state.total_chapters }} 章</p>
+      <div class="progress-bar">
+        {% set pct = (written / state.total_chapters * 100)|int if state.total_chapters > 0 else 0 %}
+        <div class="progress-fill" style="width: {{ pct }}%"></div>
+      </div>
+    </div>
+
+    <div class="card text-center">
+      <h3>🍅 综合评分</h3>
+      {% if state.global_review_report and state.global_review_report.get('overall_score') %}
+      <p style="font-size: 2rem; color: var(--accent);">{{ state.global_review_report.overall_score }}/10</p>
+      <p class="muted">
+        {% if state.global_review_report.get('ready_for_platform') %}
+          首秀就绪 ✅
+        {% else %}
+          仍需打磨 ⚠️
+        {% endif %}
+      </p>
+      {% else %}
+      <p style="font-size: 2rem; color: var(--text-secondary);">—</p>
+      <p class="muted">尚未终审</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Pipeline Status -->
+  <div class="card">
+    <h2>管线状态</h2>
+    <div class="grid grid-2 mt-1">
+      {% set ns = state.node_status %}
+      <div><span class="badge {{ 'badge-completed' if ns.get('world_building', '').value == 'completed' else 'badge-pending' }}">世界观构建</span></div>
+      <div><span class="badge {{ 'badge-completed' if ns.get('character_design', '').value == 'completed' else 'badge-pending' }}">人物设计</span></div>
+      <div><span class="badge {{ 'badge-completed' if ns.get('outline_planning', '').value == 'completed' else 'badge-pending' }}">大纲规划</span></div>
+      <div><span class="badge {{ 'badge-completed' if ns.get('human_approval_foundation', '').value == 'completed' else 'badge-pending' }}">Foundation审批</span></div>
+      <div><span class="badge {{ 'badge-completed' if ns.get('global_review', '').value == 'completed' else 'badge-pending' }}">全局终审</span></div>
+    </div>
+  </div>
+
+  <!-- Active Trackers -->
+  <div class="grid grid-2 mt-1">
+    <div class="card">
+      <h2>👥 角色弧线</h2>
+      {% if state.character_arc_tracker %}
+      {% for name, arc in state.character_arc_tracker.items() %}
+      <div class="flex justify-between items-center mt-1">
+        <span>{{ name }}</span>
+        <span class="badge badge-in-progress">{{ arc.current_stage.value }}</span>
+      </div>
+      {% endfor %}
+      {% else %}
+      <p class="muted">暂无。</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>📌 伏笔追踪</h2>
+      <p class="muted">{{ state.foreshadowing_tracker|length }} 项追踪中</p>
+      {% if state.foreshadowing_tracker %}
+      {% set active = state.foreshadowing_tracker|selectattr('status', 'equalto', 'planted')|list|length %}
+      {% set paid = state.foreshadowing_tracker|selectattr('status', 'equalto', 'paid_off')|list|length %}
+      <div class="flex justify-between mt-1">
+        <span class="badge badge-in-progress">{{ active }} 待回收</span>
+        <span class="badge badge-completed">{{ paid }} 已回收</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Actions -->
+  <div class="flex gap-1 mt-2">
+    <a href="/project/{{ project_id }}/foundation" class="btn">Foundation</a>
+    <a href="/project/{{ project_id }}/chapters" class="btn btn-primary">写章节</a>
+    {% if written == state.total_chapters and state.total_chapters > 0 %}
+    <a href="/project/{{ project_id }}/review" class="btn">全局终审</a>
+    {% endif %}
+  </div>
+</div>
+<script src="/static/chat.js"></script>
+</body>
+</html>
