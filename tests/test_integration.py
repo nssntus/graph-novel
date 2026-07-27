@@ -828,6 +828,68 @@ def test_output_contract_parsing_and_retry():
     print("✓ PASSED")
 
 
+def test_large_outline_generation_is_batched():
+    """Large novels use one overview plus bounded chapter batches."""
+    print("  Testing large outline batching...", end=" ")
+    from graph_novel.nodes import outline_planning
+
+    total_chapters = 200
+    batch_size = 25
+    overview = {
+        "genre": "末世重生",
+        "premise": "主角重生后建立生存基地",
+        "theme": "秩序与人性",
+        "target_length": "50万字",
+        "suggested_chapter_count": total_chapters,
+        "shuangdian_map": [],
+    }
+
+    responses = [json.dumps(overview, ensure_ascii=False)]
+    for start in range(1, total_chapters + 1, batch_size):
+        end = min(start + batch_size - 1, total_chapters)
+        responses.append(json.dumps({
+            "chapter_outlines": [
+                {
+                    "chapter_number": number,
+                    "title": f"第{number}章 生存倒计时",
+                    "summary": "主角推进基地建设与主线冲突。",
+                    "pov_character": "主角",
+                    "key_events": ["危机升级", "资源争夺"],
+                    "shuangdian_beat": "铺垫",
+                    "chapter_hook_idea": "新的威胁逼近",
+                    "foreshadowing_to_plant": [],
+                    "foreshadowing_to_pay_off": [],
+                }
+                for number in range(start, end + 1)
+            ],
+        }, ensure_ascii=False))
+
+    state = make_sample_state()
+    state.novel_title = "大型大纲测试"
+    state.novel_outline = None
+    state.target_total_chapters = total_chapters
+    state.total_chapters = total_chapters
+
+    with mock.patch(
+        "graph_novel.nodes.outline_planning.call_llm_sync",
+        side_effect=responses,
+    ) as llm_call:
+        outline_planning.run_node(state)
+
+    assert state.node_status["outline_planning"] == NodeStatus.COMPLETED
+    assert state.novel_outline is not None
+    assert len(state.novel_outline.chapter_outlines) == total_chapters
+    assert [
+        chapter.chapter_number
+        for chapter in state.novel_outline.chapter_outlines
+    ] == list(range(1, total_chapters + 1))
+    assert llm_call.call_count == 9
+    assert "只生成全书总纲" in llm_call.call_args_list[0].args[1]
+    assert "第1章到第25章" in llm_call.call_args_list[1].args[1]
+    assert "第176章到第200章" in llm_call.call_args_list[-1].args[1]
+    print("✓ PASSED")
+
+
 def test_llm_provider_configuration():
     """Provider settings and DeepSeek-specific request parameters are centralized."""
     print("  Testing DeepSeek provider configuration...", end=" ")
@@ -1205,6 +1267,110 @@ def test_foundation_failure_stops_graph():
     assert state.workflow_phase == "failed"
     assert state.pending_gate is None
     assert state.last_error["node"] == "world_building"
+    print("✓ PASSED")
+
+
+def test_foundation_retry_resumes_from_failed_outline():
+    """A retry reuses completed upstream checkpoints after outline failure."""
+    print("  Testing Foundation checkpoint resume...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+
+    state = make_sample_state()
+    state.project_id = "foundation_outline_resume"
+    state.save_dir = Path(tempfile.mkdtemp())
+    state.novel_outline = None
+    state.target_total_chapters = 3
+    state.node_status = {}
+    engine = GraphNovelEngine(state)
+
+    def complete_world(current):
+        current.node_status["world_building"] = NodeStatus.COMPLETED
+        return current
+
+    def complete_characters(current):
+        current.node_status["character_design"] = NodeStatus.COMPLETED
+        return current
+
+    def fail_outline(current):
+        current.node_status["outline_planning"] = NodeStatus.FAILED
+        current.last_error = {
+            "node": "outline_planning",
+            "message": "outline.genre 缺少必填字段",
+        }
+        return current
+
+    def complete_outline(current):
+        current.novel_outline = NovelOutline(
+            genre="Fantasy",
+            premise="Test",
+            theme="Test",
+            target_length="6000 words",
+            chapter_outlines=[
+                ChapterOutline(
+                    chapter_number=number,
+                    title=f"Chapter {number}",
+                    summary="Test",
+                )
+                for number in range(1, 4)
+            ],
+        )
+        current.node_status["outline_planning"] = NodeStatus.COMPLETED
+        return current
+
+    outline_runs = [fail_outline, complete_outline]
+    with mock.patch(
+        "graph_novel.nodes.world_building.run_node",
+        side_effect=complete_world,
+    ) as world_node, mock.patch(
+        "graph_novel.nodes.character_design.run_node",
+        side_effect=complete_characters,
+    ) as character_node, mock.patch(
+        "graph_novel.nodes.outline_planning.run_node",
+        side_effect=lambda current: outline_runs.pop(0)(current),
+    ) as outline_node:
+        try:
+            engine.run_foundation_generation()
+            raise AssertionError("Expected GraphExecutionError")
+        except GraphExecutionError:
+            pass
+
+        assert state.workflow_phase == "failed"
+        engine.run_foundation_generation()
+
+    world_node.assert_called_once()
+    character_node.assert_called_once()
+    assert outline_node.call_count == 2
+    assert state.pending_gate == "foundation"
+    assert state.workflow_phase == "foundation"
+    print("✓ PASSED")
+
+
+def test_failed_foundation_page_exposes_retry():
+    """Partial Foundation data must not hide the retry action."""
+    print("  Testing failed Foundation retry page...", end=" ")
+    from graph_novel.web.app import app as flask_app, _states
+
+    project_id = "failed_foundation_retry_page"
+    state = make_sample_state()
+    state.project_id = project_id
+    state.novel_outline = None
+    state.target_total_chapters = 200
+    state.workflow_phase = "failed"
+    state.pending_gate = None
+    state.foundation_approval = ApprovalStatus.PENDING
+    state.last_error = {
+        "node": "outline_planning",
+        "message": "outline.genre 缺少必填字段",
+    }
+    _states[project_id] = state
+
+    with flask_app.test_client() as client:
+        page = client.get(f"/project/{project_id}/foundation")
+
+    assert page.status_code == 200
+    html = page.get_data(as_text=True)
+    assert "重试基础设定生成" in html
+    assert "长篇大纲会分批生成" in html
     print("✓ PASSED")
 
 
@@ -1833,6 +1999,7 @@ def run_all_tests():
         test_state_serialization,
         test_graph_engine_routing,
         test_output_contract_parsing_and_retry,
+        test_large_outline_generation_is_batched,
         test_llm_provider_configuration,
         test_execution_trace_and_unified_export,
         test_web_observability_and_export_contract,
@@ -1847,6 +2014,8 @@ def run_all_tests():
         test_project_inputs_and_legacy_state_migration,
         test_foundation_gate_and_feedback_edge,
         test_foundation_failure_stops_graph,
+        test_foundation_retry_resumes_from_failed_outline,
+        test_failed_foundation_page_exposes_retry,
         test_foundation_web_api_contract,
         test_chapter_gate_feedback_and_side_effect_commit,
         test_chapter_failure_stops_before_gate,

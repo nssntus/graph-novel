@@ -223,6 +223,49 @@ def outline_contract(expected_chapters: int) -> ResponseContract:
     return ResponseContract("章节大纲", dict, validate)
 
 
+def outline_overview_contract(expected_chapters: int) -> ResponseContract:
+    """Validate the stable, book-level portion of a large outline."""
+
+    def validate(value: Dict[str, Any]) -> None:
+        _validate_schema(value, OUTLINE_OVERVIEW_SCHEMA, path="outline")
+        if value["suggested_chapter_count"] != expected_chapters:
+            raise OutputContractError(
+                "outline.suggested_chapter_count 与目标章数不一致"
+            )
+
+    return ResponseContract("全书总纲", dict, validate)
+
+
+def outline_batch_contract(
+    start_chapter: int,
+    end_chapter: int,
+) -> ResponseContract:
+    """Validate one contiguous batch of chapter outlines."""
+
+    def validate(value: Dict[str, Any]) -> None:
+        _validate_schema(value, OUTLINE_BATCH_SCHEMA, path="outline_batch")
+        chapters = value["chapter_outlines"]
+        expected_count = end_chapter - start_chapter + 1
+        if len(chapters) != expected_count:
+            raise OutputContractError(
+                "outline_batch.chapter_outlines 章数不匹配："
+                f"期望 {expected_count}，实际 {len(chapters)}"
+            )
+        for index, chapter in enumerate(chapters):
+            expected_number = start_chapter + index
+            if chapter["chapter_number"] != expected_number:
+                raise OutputContractError(
+                    "outline_batch.chapter_outlines"
+                    f"[{index}].chapter_number 应为 {expected_number}"
+                )
+
+    return ResponseContract(
+        f"第{start_chapter}章到第{end_chapter}章大纲",
+        dict,
+        validate,
+    )
+
+
 def chapter_plan_contract(expected_chapter: int) -> ResponseContract:
     def validate(value: Dict[str, Any]) -> None:
         _validate_schema(value, CHAPTER_PLAN_SCHEMA, path="chapter_plan")
@@ -346,7 +389,7 @@ OUTLINE_CHAPTER_SCHEMA = {
     "foreshadowing_to_pay_off": [str],
 }
 
-OUTLINE_SCHEMA = {
+OUTLINE_OVERVIEW_SCHEMA = {
     "genre": str,
     "premise": str,
     "theme": str,
@@ -357,7 +400,15 @@ OUTLINE_SCHEMA = {
         "type": str,
         "description": str,
     }],
+}
+
+OUTLINE_BATCH_SCHEMA = {
     "chapter_outlines": [OUTLINE_CHAPTER_SCHEMA],
+}
+
+OUTLINE_SCHEMA = {
+    **OUTLINE_OVERVIEW_SCHEMA,
+    **OUTLINE_BATCH_SCHEMA,
 }
 
 CHAPTER_PLAN_SCHEMA = {

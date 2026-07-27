@@ -168,6 +168,16 @@ class GraphNovelEngine:
         """Run Foundation nodes and stop at the persisted human approval gate."""
         self.validate_foundation_generation()
 
+        resume_outline = (
+            self.state.workflow_phase == "failed"
+            and self.state.last_error.get("node") == "outline_planning"
+            and self.state.node_status.get("world_building")
+            == NodeStatus.COMPLETED
+            and self.state.node_status.get("character_design")
+            == NodeStatus.COMPLETED
+            and bool(self.state.world_setting)
+            and bool(self.state.characters)
+        )
         self.phase = GraphPhase.FOUNDATION
         self.state.workflow_phase = "foundation"
         self.state.pending_gate = None
@@ -176,21 +186,30 @@ class GraphNovelEngine:
         self.state.log("="*50)
         self.state.log("PHASE 1: Foundation")
 
-        # Node 1: World-Building
-        self._execute_required_node("world_building", world_building.run_node)
-        self._record_route(
-            "world_building",
-            "character_design",
-            "world_ready",
-        )
+        if resume_outline:
+            self.state.log(
+                "Foundation checkpoint — 复用已完成的世界观和角色，"
+                "从大纲规划恢复。"
+            )
+        else:
+            # Node 1: World-Building
+            self._execute_required_node("world_building", world_building.run_node)
+            self._record_route(
+                "world_building",
+                "character_design",
+                "world_ready",
+            )
 
-        # Node 2: Character Design (can run after world-building)
-        self._execute_required_node("character_design", character_design.run_node)
-        self._record_route(
-            "character_design",
-            "outline_planning",
-            "characters_ready",
-        )
+            # Node 2: Character Design (can run after world-building)
+            self._execute_required_node(
+                "character_design",
+                character_design.run_node,
+            )
+            self._record_route(
+                "character_design",
+                "outline_planning",
+                "characters_ready",
+            )
 
         # Node 3: Outline Planning (needs world + characters)
         self._execute_required_node("outline_planning", outline_planning.run_node)

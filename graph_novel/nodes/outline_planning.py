@@ -17,9 +17,14 @@ from graph_novel.state import (
 from graph_novel.llm import call_llm_sync
 from graph_novel.output_contracts import (
     call_json_with_contract_sync,
+    outline_batch_contract,
     outline_contract,
+    outline_overview_contract,
     to_prompt_data,
 )
+
+OUTLINE_SINGLE_CALL_LIMIT = 30
+OUTLINE_BATCH_SIZE = 25
 
 SYSTEM_PROMPT = """你是一位番茄小说平台的资深大纲规划师。你的任务是设计一部网文的完整章节大纲，
 核心原则：快节奏、爽点密集、章章有钩子、黄金三章定生死。
@@ -61,6 +66,137 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的资深大纲规划师。你�
 
 请只输出 JSON 对象，不要其他文字。"""
 
+OVERVIEW_SYSTEM_PROMPT = """你是一位番茄小说平台的资深总纲规划师。
+请设计全书级别的题材、卖点、主题和爽点排期，确保长篇故事主线能够支撑目标章数。
+
+输出 JSON 对象：
+- genre: 题材
+- premise: 一句话卖点
+- theme: 核心主题
+- target_length: 目标总字数
+- suggested_chapter_count: 必须等于用户给出的目标章数
+- shuangdian_map: 爽点排期表 [{chapter_range, type, description}]
+
+请只输出 JSON 对象，不要输出 chapter_outlines，不要其他文字。"""
+
+BATCH_SYSTEM_PROMPT = """你是一位番茄小说平台的资深章节大纲规划师。
+请根据已经确定的全书总纲，设计指定连续章节范围的大纲，并保持与前序章节衔接。
+遵循快节奏、爽点密集、章章有钩子；前3章严格遵循黄金三章法则。
+
+输出 JSON 对象，唯一的顶层字段是 chapter_outlines。数组中每章包含：
+- chapter_number: 章号
+- title: 有网感的章标题
+- summary: 本章概要
+- pov_character: POV角色
+- key_events: 关键事件列表（3-5条）
+- shuangdian_beat: 爽点定位
+- chapter_hook_idea: 章末钩子构思
+- foreshadowing_to_plant: 要埋的伏笔列表
+- foreshadowing_to_pay_off: 要回收的伏笔列表
+
+请只输出 JSON 对象，不要其他文字。"""
+
+
+def _generate_outline_data(
+    state: GraphNovelState,
+    world_json: str,
+    chars_text: str,
+    total_chapters: int,
+) -> dict:
+    genre_tags = ", ".join(state.genre_tags) if state.genre_tags else "未指定"
+    foundation_feedback = state.foundation_feedback or "无"
+
+    story_context = f"""世界设定：
+{world_json}
+
+角色：
+{chars_text}
+
+书名：{state.novel_title}
+用户指定题材：{state.creative_genre or '未指定'}
+题材标签：{genre_tags}
+用户的一句话卖点：{state.creative_premise or '未指定'}
+用户的核心爽点方向：{state.creative_theme or '未指定'}
+目标总字数：{state.target_total_words}
+目标章数：{total_chapters}
+上一轮 Foundation 修改意见：{foundation_feedback}"""
+
+    if total_chapters <= OUTLINE_SINGLE_CALL_LIMIT:
+        user_prompt = f"""为这部番茄小说创建完整大纲。
+
+{story_context}
+
+生成恰好 {total_chapters} 章的完整大纲 JSON。特别是前3章要严格按黄金三章法则设计。"""
+        return call_json_with_contract_sync(
+            call_llm_sync,
+            SYSTEM_PROMPT,
+            user_prompt,
+            contract=outline_contract(total_chapters),
+            max_tokens=8192,
+            temperature=0.7,
+        )
+
+    overview_prompt = f"""为这部长篇番茄小说创建全书总纲。
+
+{story_context}
+
+只生成全书总纲和覆盖全程的爽点排期，不要生成 chapter_outlines。
+suggested_chapter_count 必须是 {total_chapters}。"""
+    overview = call_json_with_contract_sync(
+        call_llm_sync,
+        OVERVIEW_SYSTEM_PROMPT,
+        overview_prompt,
+        contract=outline_overview_contract(total_chapters),
+        max_tokens=4096,
+        temperature=0.7,
+    )
+
+    chapter_outlines = []
+    overview_json = json.dumps(overview, ensure_ascii=False, indent=2)
+    for start in range(1, total_chapters + 1, OUTLINE_BATCH_SIZE):
+        end = min(start + OUTLINE_BATCH_SIZE - 1, total_chapters)
+        previous_chapters = (
+            json.dumps(
+                chapter_outlines[-3:],
+                ensure_ascii=False,
+                indent=2,
+            )
+            if chapter_outlines
+            else "无，这是第一批。"
+        )
+        batch_prompt = f"""为下列小说生成第{start}章到第{end}章的章节大纲。
+
+全书总纲：
+{overview_json}
+
+世界设定：
+{world_json}
+
+主要角色：
+{chars_text}
+
+前序最近三章：
+{previous_chapters}
+
+必须恰好生成第{start}章到第{end}章，共 {end - start + 1} 章，
+章号连续且不得重复。只输出包含 chapter_outlines 的 JSON 对象。"""
+        batch = call_json_with_contract_sync(
+            call_llm_sync,
+            BATCH_SYSTEM_PROMPT,
+            batch_prompt,
+            contract=outline_batch_contract(start, end),
+            max_tokens=8192,
+            temperature=0.7,
+        )
+        chapter_outlines.extend(batch["chapter_outlines"])
+        state.log(
+            f"节点3: 大纲规划 — 已完成第{start}-{end}章"
+            f"（{len(chapter_outlines)}/{total_chapters}）。"
+        )
+
+    overview["chapter_outlines"] = chapter_outlines
+    return overview
+
 
 def run_node(state: GraphNovelState) -> GraphNovelState:
     state.log("节点3: 大纲规划 — 生成章节大纲……")
@@ -74,37 +210,14 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         char_summary.append(f"{c.name}（{c.role}）：{c.motivation} | {c.notes[:80]}")
     chars_text = "\n".join(char_summary)
 
-    genre_tags = ", ".join(state.genre_tags) if state.genre_tags else "未指定"
     total_chapters = state.target_total_chapters or state.total_chapters or 30
-    foundation_feedback = state.foundation_feedback or "无"
-
-    user_prompt = f"""为这部番茄小说创建完整大纲。
-
-世界设定：
-{world_json}
-
-角色：
-{chars_text}
-
-书名：{state.novel_title}
-用户指定题材：{state.creative_genre or '未指定'}
-题材标签：{genre_tags}
-用户的一句话卖点：{state.creative_premise or '未指定'}
-用户的核心爽点方向：{state.creative_theme or '未指定'}
-目标总字数：{state.target_total_words}
-目标章数：{total_chapters}
-上一轮 Foundation 修改意见：{foundation_feedback}
-
-生成恰好 {total_chapters} 章的完整大纲 JSON。特别是前3章要严格按黄金三章法则设计。"""
 
     try:
-        data = call_json_with_contract_sync(
-            call_llm_sync,
-            SYSTEM_PROMPT,
-            user_prompt,
-            contract=outline_contract(total_chapters),
-            max_tokens=8192,
-            temperature=0.7,
+        data = _generate_outline_data(
+            state,
+            world_json,
+            chars_text,
+            total_chapters,
         )
         chapter_data = data["chapter_outlines"]
 
