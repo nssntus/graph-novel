@@ -8,6 +8,7 @@ import json
 from graph_novel.state import GraphNovelState, NodeStatus, Foreshadowing
 from graph_novel.llm import call_llm_sync
 from graph_novel.output_contracts import (
+    OutputContractError,
     call_text_with_contract_sync,
     parse_chapter_response,
 )
@@ -78,7 +79,9 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的签约作者。你写快节�
   }
 }
 
-facts_established 和 knowledge_changes 只能记录章节规划中已经声明的变化。
+facts_established 必须逐项复制章节规划中的 planned_facts，不得新增、改名或遗漏。
+knowledge_changes 只能记录章节规划中 information_flow 已经声明的变化。
+如果正文创作时想到规划外的新身份、组织、能力、物品或幕后关系，删除该内容，不要写入正文或 META。
 角色不能凭空获得信息，也不能把怀疑直接写成确认。
 请写出完整的章节正文（2000-2500字），然后附上 META 数据。"""
 
@@ -102,15 +105,43 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
             ensure_ascii=False,
             indent=2,
         )
+        allowed_delta_text = json.dumps(
+            {
+                "facts_established": chapter.plan.get(
+                    "planned_facts",
+                    [],
+                ),
+                "knowledge_changes": chapter.plan.get(
+                    "information_flow",
+                    [],
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
     else:
         plan_text = f"""第{ch_num}章：{chapter.title}
 大纲概要：{outline.summary if outline else '按大纲推进'}
 关键事件：{outline.key_events if outline else '自然推进'}"""
+        allowed_delta_text = json.dumps(
+            {
+                "facts_established": [],
+                "knowledge_changes": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     user_prompt = f"""请写第{ch_num}章正文。
 
 == 章节规划 ==
 {plan_text}
+
+== 本章状态变化白名单 ==
+{allowed_delta_text}
+
+facts_established 必须与白名单完全一致；knowledge_changes 不得超出白名单。
+白名单外的剧情设定必须从正文和 META 中删除。
 
 == 世界设定 ==
 {world_text}
@@ -134,24 +165,25 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 请写出2000-2500字的章节正文。记住：对话驱动、手机阅读适配、章末强钩子、避免AI写作禁忌。"""
 
     try:
-        def parse_and_validate(text):
-            parsed_prose, parsed_meta = parse_chapter_response(text)
-            validate_narrative_delta(
-                state,
-                chapter.plan,
-                parsed_meta,
-            )
-            return parsed_prose, parsed_meta
-
         prose, meta = call_text_with_contract_sync(
             call_llm_sync,
             SYSTEM_PROMPT,
             user_prompt,
-            parser=parse_and_validate,
+            parser=parse_chapter_response,
             contract_name="章节正文与 META",
             max_tokens=8192,
             temperature=0.85,
         )
+
+        contract_violations = []
+        try:
+            validate_narrative_delta(
+                state,
+                chapter.plan,
+                meta,
+            )
+        except OutputContractError as exc:
+            contract_violations.append(str(exc))
 
         chapter.draft = prose
         chapter.word_count = len(prose.replace(' ', ''))  # 中文按字数算
@@ -162,13 +194,27 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
             "knowledge_changes": meta["knowledge_changes"],
             "continuity_changes": meta["continuity_changes"],
         }
+        if contract_violations:
+            chapter.narrative_delta[
+                "contract_violations"
+            ] = contract_violations
 
         if meta:
             chapter.chapter_hook = meta.get("chapter_hook", "")
             chapter.shuangdian_type = meta.get("shuangdian_beat", "")
 
         state.node_status[f"writing_{ch_num}"] = NodeStatus.COMPLETED
-        state.log(f"节点5: 章节写作 — 第{ch_num}章完成（{chapter.word_count}字）| 钩子：{chapter.chapter_hook[:30]}")
+        if contract_violations:
+            state.log(
+                f"节点5: 章节写作 — 第{ch_num}章候选稿越过叙事规划，"
+                "转入自动重写。"
+            )
+        else:
+            state.log(
+                f"节点5: 章节写作 — 第{ch_num}章完成"
+                f"（{chapter.word_count}字）| 钩子："
+                f"{chapter.chapter_hook[:30]}"
+            )
     except Exception as e:
         state.node_status[f"writing_{ch_num}"] = NodeStatus.FAILED
         state.last_error = {"node": f"writing_{ch_num}", "message": str(e)}

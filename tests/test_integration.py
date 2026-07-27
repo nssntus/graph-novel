@@ -626,6 +626,60 @@ def test_information_transfer_requires_a_valid_source():
     print("✓ PASSED")
 
 
+def test_unplanned_writing_fact_retries_without_replanning():
+    """Writer-only fact drift should take a bounded writing rewrite edge."""
+    print("  Testing unplanned writing fact routing...", end=" ")
+
+    state = make_sample_state()
+    engine = GraphNovelEngine(state)
+
+    invalid_meta = json.loads(
+        mock_chapter_response().split("---META---", 1)[1]
+    )
+    invalid_meta["facts_established"] = [{
+        "fact_id": "mysterious_superior",
+        "statement": "一个从未规划的神秘上级在幕后发号施令",
+        "category": "character_identity",
+        "visibility": "private",
+    }]
+    invalid_response = (
+        MOCK_CHAPTER_DRAFT
+        + "\n\n---META---\n"
+        + json.dumps(invalid_meta, ensure_ascii=False)
+    )
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=mock_chapter_plan(),
+    ) as plan_call, mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        side_effect=[
+            invalid_response,
+            invalid_response,
+            mock_chapter_response(),
+        ],
+    ) as write_call, mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=json.dumps(MOCK_CONSISTENCY_REPORT),
+    ) as review_call, mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=MOCK_CHAPTER_DRAFT,
+    ):
+        engine.run_chapter_generation(1)
+
+    assert plan_call.call_count == 1
+    assert write_call.call_count == 3
+    assert review_call.call_count == 1
+    assert len(state.chapters[0].revision_history) == 2
+    assert all(
+        item["source"] == "narrative_contract"
+        for item in state.chapters[0].revision_history
+    )
+    assert "mysterious_superior" in write_call.call_args_list[1].args[1]
+    assert state.pending_gate == "chapter:1"
+    print("✓ PASSED")
+
+
 def test_high_score_knowledge_leak_forces_rewrite():
     """A serious narrative violation rewrites even when the score is high."""
     print("  Testing high-score knowledge leak routing...", end=" ")
@@ -2375,6 +2429,7 @@ def run_all_tests():
         test_consistency_rewrite_loop,
         test_chapter_plan_is_persisted_and_consumed,
         test_information_transfer_requires_a_valid_source,
+        test_unplanned_writing_fact_retries_without_replanning,
         test_high_score_knowledge_leak_forces_rewrite,
         test_unresolved_narrative_violation_stops_graph,
         test_narrative_delta_commits_only_after_approval,

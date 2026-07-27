@@ -420,23 +420,27 @@ class GraphNovelEngine:
 
         max_rewrites = 2  # Maximum rewrite attempts per chapter
         rewrite_count = 0
+        needs_plan = True
 
         while True:
             # Node 4: Chapter Planning
-            self._execute_required_node(
-                f"chapter_planning_{ch_num}",
-                chapter_planning.run_node,
-            )
-            self._record_route(
-                f"chapter_planning_{ch_num}",
-                f"writing_{ch_num}",
-                "plan_ready",
-            )
+            if needs_plan:
+                self._execute_required_node(
+                    f"chapter_planning_{ch_num}",
+                    chapter_planning.run_node,
+                )
+                self._record_route(
+                    f"chapter_planning_{ch_num}",
+                    f"writing_{ch_num}",
+                    "plan_ready",
+                )
+                needs_plan = False
 
             # Node 5: Chapter Writing
             self._execute_required_node(f"writing_{ch_num}", writing.run_node)
 
-            if not self.state.chapters[ch_num - 1].draft:
+            chapter = self.state.chapters[ch_num - 1]
+            if not chapter.draft:
                 message = f"Chapter {ch_num} writing produced no draft."
                 self.state.node_status[f"writing_{ch_num}"] = NodeStatus.FAILED
                 self.state.last_error = {
@@ -444,6 +448,60 @@ class GraphNovelEngine:
                     "message": message,
                 }
                 self._require_completed(f"writing_{ch_num}")
+
+            contract_violations = chapter.narrative_delta.get(
+                "contract_violations",
+                [],
+            )
+            if contract_violations:
+                feedback = self._format_narrative_contract_feedback(
+                    contract_violations,
+                )
+                if rewrite_count < max_rewrites:
+                    rewrite_count += 1
+                    self.state.log(
+                        f"Chapter {ch_num} writing exceeded its narrative "
+                        f"plan. Attempt {rewrite_count}/{max_rewrites}"
+                    )
+                    self._prepare_chapter_revision(
+                        chapter,
+                        feedback,
+                        source="narrative_contract",
+                        preserve_plan=True,
+                    )
+                    self._record_route(
+                        f"writing_{ch_num}",
+                        f"writing_{ch_num}",
+                        "narrative_contract_failed",
+                        rewrite_attempt=rewrite_count,
+                    )
+                    continue
+
+                node_key = f"narrative_gate_{ch_num}"
+                message = (
+                    f"Chapter {ch_num} 连续生成了章节规划之外的剧情事实，"
+                    f"已达到 {max_rewrites} 次自动重写上限。"
+                )
+                self._prepare_chapter_revision(
+                    chapter,
+                    feedback,
+                    source="narrative_contract",
+                    preserve_plan=True,
+                )
+                self.state.node_status[node_key] = NodeStatus.FAILED
+                self.state.last_error = {
+                    "node": node_key,
+                    "message": message,
+                }
+                self.state.workflow_phase = "failed"
+                self.state.pending_gate = None
+                self._record_route(
+                    f"writing_{ch_num}",
+                    node_key,
+                    "narrative_rewrite_limit_reached",
+                    rewrite_attempt=rewrite_count,
+                )
+                raise GraphExecutionError(node_key, message)
 
             self._record_route(
                 f"writing_{ch_num}",
@@ -478,6 +536,7 @@ class GraphNovelEngine:
                     self._format_review_feedback(review),
                     source="consistency_review",
                 )
+                needs_plan = True
                 self._record_route(
                     f"consistency_review_{ch_num}",
                     f"chapter_planning_{ch_num}",
@@ -660,11 +719,23 @@ class GraphNovelEngine:
         return "\n".join(lines)
 
     @staticmethod
+    def _format_narrative_contract_feedback(violations: list) -> str:
+        lines = [
+            "正文违反章节规划中的叙事状态白名单，必须重写正文。",
+            "不要修改章节规划来吸收这些临时添加的设定；"
+            "请直接删除或改写越界内容：",
+        ]
+        lines.extend(f"- {violation}" for violation in violations)
+        return "\n".join(lines)
+
+    @staticmethod
     def _prepare_chapter_revision(
         chapter: Chapter,
         feedback: str,
         source: str,
+        preserve_plan: bool = False,
     ) -> None:
+        retained_plan = chapter.plan if preserve_plan else {}
         if chapter.draft or chapter.polished_draft or chapter.consistency_report:
             chapter.revision_history.append({
                 "revision": chapter.revision_count,
@@ -682,7 +753,7 @@ class GraphNovelEngine:
             chapter.revision_count += 1
 
         chapter.rewrite_feedback = feedback
-        chapter.plan = {}
+        chapter.plan = retained_plan
         chapter.draft = ""
         chapter.polished_draft = ""
         chapter.consistency_report = {}
