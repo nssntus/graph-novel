@@ -105,24 +105,31 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         chapter.consistency_report = report
         state.node_status[f"consistency_review_{ch_num}"] = NodeStatus.COMPLETED
 
-        arc_updates = report.get("character_arc_updates", {})
-        for name, new_stage in arc_updates.items():
-            if name in state.character_arc_tracker:
-                try:
-                    state.character_arc_tracker[name].current_stage = ArcStage(new_stage)
-                except ValueError:
-                    pass
-
         score = report.get("overall_score", "?")
         issues = len(report.get("issues", []))
         ai_diseases = report.get("ai_disease_count", 0)
         state.log(f"节点6: 毒舌审稿 — 评分{score}/10 | {issues}个问题 | AI病{ai_diseases}处")
     except Exception as e:
         state.node_status[f"consistency_review_{ch_num}"] = NodeStatus.FAILED
+        state.last_error = {
+            "node": f"consistency_review_{ch_num}",
+            "message": str(e),
+        }
         state.log(f"节点6: 毒舌审稿 — 失败: {e}")
         chapter.consistency_report = {"error": str(e), "overall_score": 0}
 
     return state
+
+
+def commit_arc_updates(state: GraphNovelState, ch_num: int) -> None:
+    """Idempotently apply accepted reviewer arc-stage updates."""
+    report = state.chapters[ch_num - 1].consistency_report
+    for name, new_stage in report.get("character_arc_updates", {}).items():
+        if name in state.character_arc_tracker:
+            try:
+                state.character_arc_tracker[name].current_stage = ArcStage(new_stage)
+            except ValueError:
+                continue
 
 
 def _world_context(state: GraphNovelState) -> str:

@@ -53,6 +53,12 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     if state.novel_outline and state.novel_outline.shuangdian_map:
         shuangdian_context = "爽点排期表：\n" + json.dumps(state.novel_outline.shuangdian_map, ensure_ascii=False, indent=2)
 
+    rewrite_feedback = (
+        state.chapters[ch_num - 1].rewrite_feedback
+        if ch_num <= len(state.chapters)
+        else ""
+    ) or "无"
+
     user_prompt = f"""规划第{ch_num}章的详细写作方案。
 
 章节大纲：
@@ -66,6 +72,9 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 角色弧线状态：
 {arc_text}
 
+本轮重写反馈：
+{rewrite_feedback}
+
 字数目标：2000-2500字 | 对话驱动 | 手机阅读适配
 
 生成详细的章节规划 JSON。"""
@@ -74,24 +83,23 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=4096, temperature=0.7)
         json_text = _extract_json(raw)
         data = json.loads(json_text)
-
-        chapter = Chapter(
-            chapter_number=ch_num,
-            title=data.get("title", f"第{ch_num}章"),
-            outline=outline,
-        )
+        if not isinstance(data, dict):
+            raise ValueError("章节规划响应必须是 JSON 对象")
 
         while len(state.chapters) < ch_num:
             state.chapters.append(Chapter(chapter_number=len(state.chapters) + 1, title=""))
-        if len(state.chapters) < ch_num:
-            state.chapters.append(chapter)
-        else:
-            state.chapters[ch_num - 1] = chapter
+        chapter = state.chapters[ch_num - 1]
+        chapter.title = data.get("title", f"第{ch_num}章")
+        chapter.outline = outline
 
         state.node_status[f"chapter_planning_{ch_num}"] = NodeStatus.COMPLETED
         state.log(f"节点4: 章节规划 — 第{ch_num}章已规划。")
     except Exception as e:
         state.node_status[f"chapter_planning_{ch_num}"] = NodeStatus.FAILED
+        state.last_error = {
+            "node": f"chapter_planning_{ch_num}",
+            "message": str(e),
+        }
         state.log(f"节点4: 章节规划 — 失败: {e}")
         if len(state.chapters) < ch_num:
             state.chapters.append(Chapter(chapter_number=ch_num, title=f"第{ch_num}章"))

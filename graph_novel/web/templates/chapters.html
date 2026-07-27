@@ -20,7 +20,7 @@
 <div class="container container-wide">
   <div class="flex justify-between items-center mb-2">
     <h2 style="font-weight: normal; font-size: 1.5rem;">{{ state.novel_title }} — 章节写作</h2>
-    {% set written = state.chapters|selectattr('polished_draft')|list|length %}
+    {% set written = approved_count %}
     <span class="muted">{{ written }}/{{ state.total_chapters }} 章已完成</span>
   </div>
 
@@ -38,8 +38,12 @@
       <div class="card" id="chapter-card-{{ ch_num }}">
         <div class="flex justify-between items-center">
           <h3>第{{ ch_num }}章{% if ch and ch.title %}：{{ ch.title[:20] }}{% endif %}</h3>
-          {% if ch and ch.polished_draft %}
+          {% if ch and ch.approval.value == "approved" %}
             <span class="badge badge-approved">已完成</span>
+          {% elif ch and ch.approval.value == "rejected" %}
+            <span class="badge badge-pending">待重写</span>
+          {% elif ch and ch.polished_draft %}
+            <span class="badge badge-in-progress">待审批</span>
           {% elif ch and ch.draft %}
             <span class="badge badge-in-progress">草稿</span>
           {% else %}
@@ -63,13 +67,17 @@
         {% endif %}
 
         <div class="flex gap-1 mt-1">
-          {% if not ch or not ch.polished_draft %}
-            <button class="btn btn-primary btn-sm" onclick="runChapter({{ ch_num }})">
-              写这章
-            </button>
-          {% else %}
+          {% if ch and ch.approval.value == "approved" %}
             <button class="btn btn-sm" onclick="viewChapter({{ ch_num }})">
               阅读
+            </button>
+          {% elif ch and ch.polished_draft and ch.approval.value == "pending" %}
+            <button class="btn btn-primary btn-sm" onclick="viewChapter({{ ch_num }})">
+              审批
+            </button>
+          {% else %}
+            <button class="btn btn-primary btn-sm" onclick="runChapter({{ ch_num }})">
+              {{ "按反馈重写" if ch and ch.approval.value == "rejected" else "写这章" }}
             </button>
           {% endif %}
         </div>
@@ -79,12 +87,12 @@
     {% endfor %}
   </div>
 
-  <!-- Run All Remaining -->
+  <!-- Run Next Remaining -->
   <div class="card text-center mt-2" style="padding: 2rem;" id="run-all-section">
-    <h3>批量写作剩余章节</h3>
-    <p class="muted mb-2">逐章跑完完整管线（规划→写作→毒舌审稿→润色→待审批）。每章约1-3分钟。</p>
+    <h3>生成下一待写章节</h3>
+    <p class="muted mb-2">运行一章完整管线（规划→写作→毒舌审稿→润色），到人工审批 Gate 后暂停。</p>
     <button class="btn btn-primary" onclick="runAllChapters()" id="run-all-btn">
-      批量写作
+      生成下一章
     </button>
     <div id="run-all-status" class="mt-2"></div>
   </div>
@@ -148,14 +156,22 @@ async function runChapter(chNum) {
       const card = document.getElementById('chapter-card-' + chNum);
       const badge = card.querySelector('.badge');
       if (badge) {
-        badge.textContent = '已完成';
-        badge.className = 'badge badge-approved';
+        badge.textContent = '待审批';
+        badge.className = 'badge badge-in-progress';
       }
+      const action = card.querySelector('button');
+      if (action) {
+        action.textContent = '审批';
+        action.onclick = function(){ viewChapter(chNum); };
+      }
+      return true;
     } else {
       status.innerHTML = '<p class="alert alert-error">失败：' + (data.error || '未知错误') + '</p>';
+      return false;
     }
   } catch (err) {
     status.innerHTML = '<p class="alert alert-error">连接错误：' + err.message + '</p>';
+    return false;
   }
 }
 
@@ -197,6 +213,8 @@ async function approveFromModal(approved) {
       document.getElementById('modal-approval').style.display = 'none';
       setTimeout(closeModal, 1500);
       setTimeout(function(){ location.reload(); }, 2000);
+    } else {
+      status.innerHTML = '<p class="alert alert-error">' + (data.error || '审批失败') + '</p>';
     }
   } catch (err) {
     status.innerHTML = '<p class="alert alert-error">错误：' + err.message + '</p>';
@@ -211,14 +229,18 @@ async function runAllChapters() {
     const chCard = document.getElementById('chapter-card-' + chNum);
     if (!chCard) continue;
     const badge = chCard.querySelector('.badge');
-    if (badge && badge.textContent.trim() === '待写') {
+    if (badge && (badge.textContent.trim() === '待写' || badge.textContent.trim() === '待重写')) {
       status.innerHTML = '<p class="muted"><span class="spinner"></span> 正在写第' + chNum + '章……</p>';
-      await runChapter(chNum);
+      const generated = await runChapter(chNum);
+      status.innerHTML = generated
+        ? '<p class="alert alert-success">本章已生成，请审批后再继续下一章。</p>'
+        : '<p class="alert alert-error">本章生成失败，请查看章节错误。</p>';
+      btn.disabled = false;
+      return;
     }
   }
-  status.innerHTML = '<p class="alert alert-success">全部章节写作完成！</p>';
+  status.innerHTML = '<p class="alert alert-success">没有待生成的章节。</p>';
   btn.disabled = false;
-  location.reload();
 }
 
 function closeModal() {

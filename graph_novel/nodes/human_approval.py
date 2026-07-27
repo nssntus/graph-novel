@@ -15,6 +15,17 @@ def request_foundation_decision(state: GraphNovelState, wait_callback=None):
     return _cli_approval_foundation(state)
 
 
+def request_chapter_decision(
+    state: GraphNovelState,
+    ch_num: int,
+    wait_callback=None,
+):
+    """Collect a chapter decision without mutating graph state."""
+    if wait_callback:
+        return wait_callback(state, ch_num)
+    return _cli_approval(state, ch_num)
+
+
 def run_node(state: GraphNovelState, wait_callback=None) -> GraphNovelState:
     """
     Human approval gate.
@@ -34,11 +45,11 @@ def run_node(state: GraphNovelState, wait_callback=None) -> GraphNovelState:
 
     chapter = state.chapters[ch_num - 1]
 
-    if wait_callback:
-        approved, feedback = wait_callback(state, ch_num)
-    else:
-        # CLI fallback
-        approved, feedback = _cli_approval(state, ch_num)
+    approved, feedback = request_chapter_decision(
+        state,
+        ch_num,
+        wait_callback,
+    )
 
     chapter.approval = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
     chapter.human_feedback = feedback

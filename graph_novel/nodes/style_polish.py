@@ -73,6 +73,8 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     try:
         raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=0.5)
         polished, notes = _parse_response(raw)
+        if not polished:
+            raise ValueError("风格润色响应没有正文")
         chapter.polished_draft = polished
         chapter.word_count = len(polished.replace(' ', ''))
 
@@ -83,9 +85,11 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         state.log(f"节点7: 风格润色 — 第{ch_num}章已润色（{chapter.word_count}字）。")
     except Exception as e:
         state.node_status[f"style_polish_{ch_num}"] = NodeStatus.FAILED
+        state.last_error = {
+            "node": f"style_polish_{ch_num}",
+            "message": str(e),
+        }
         state.log(f"节点7: 风格润色 — 失败: {e}")
-        if not chapter.polished_draft:
-            chapter.polished_draft = chapter.draft
 
     return state
 

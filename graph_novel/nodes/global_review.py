@@ -100,6 +100,8 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=0.4)
         json_text = _extract_json(raw)
         report = json.loads(json_text)
+        if not isinstance(report, dict):
+            raise ValueError("全局终审响应必须是 JSON 对象")
         state.global_review_report = report
         state.node_status["global_review"] = NodeStatus.COMPLETED
         score = report.get("overall_score", "?")
@@ -107,6 +109,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
         state.log(f"节点9: 全局收束审查 — 综合评分{score}/10 | 平台就绪：{'是' if ready else '否'}")
     except Exception as e:
         state.node_status["global_review"] = NodeStatus.FAILED
+        state.last_error = {"node": "global_review", "message": str(e)}
         state.log(f"节点9: 全局收束审查 — 失败: {e}")
         state.global_review_report = {"error": str(e)}
 

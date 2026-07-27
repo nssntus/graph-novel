@@ -11,7 +11,6 @@ Provides:
 
 import os
 import json
-import threading
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -35,8 +34,6 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "graph-novel-dev-secret-key"
 # In-memory store for running engines (one per session)
 _engines: Dict[str, GraphNovelEngine] = {}
 _states: Dict[str, GraphNovelState] = {}
-_approval_events: Dict[str, threading.Event] = {}
-_approval_results: Dict[str, dict] = {}
 _save_dir = Path(os.environ.get("GRAPH_NOVEL_DIR", str(Path.home() / "GraphNovel_Projects")))
 
 _save_dir.mkdir(parents=True, exist_ok=True)
@@ -225,47 +222,45 @@ def chapters_list(project_id: str):
         "chapters.html",
         project_id=project_id,
         state=state,
+        approved_count=sum(
+            1
+            for chapter in state.chapters
+            if chapter.approval == ApprovalStatus.APPROVED
+        ),
     )
 
 
 @app.route("/api/<project_id>/run-chapter/<int:ch_num>", methods=["POST"])
 def api_run_chapter(project_id: str, ch_num: int):
-    """Run the pipeline for a single chapter (planning → writing → review → polish)."""
+    """Run chapter nodes 4-7 and stop at the persisted approval Gate."""
     engine = _get_or_create_engine(project_id)
     if not engine:
         return jsonify({"error": "Project not found"}), 404
 
-    # Set up approval callback
-    approval_event = threading.Event()
-    approval_result = {}
+    try:
+        state = engine.run_chapter_generation(ch_num)
+    except GraphExecutionError as exc:
+        state = engine.state
+        _states[project_id] = state
+        status_code = 409 if exc.code == "invalid_transition" else 422
+        return jsonify({
+            "success": False,
+            "status": (
+                "invalid_transition"
+                if exc.code == "invalid_transition"
+                else "failed"
+            ),
+            "node": exc.node_key,
+            "error": str(exc),
+        }), status_code
 
-    def chapter_callback(state, chapter_num):
-        approval_event.wait()
-        return approval_result.get("approved", False), approval_result.get("feedback", "")
-
-    engine.set_approval_callback(chapter_callback)
-    _approval_events[f"{project_id}_{ch_num}"] = approval_event
-    _approval_results[f"{project_id}_{ch_num}"] = approval_result
-
-    # Run in background thread
-    def run_chapter():
-        try:
-            engine.run_single_chapter(ch_num)
-            engine.state.save()
-        except Exception as e:
-            engine.state.log(f"Chapter {ch_num} error: {e}")
-
-    thread = threading.Thread(target=run_chapter, daemon=True)
-    thread.start()
-    thread.join(timeout=180)
-
-    state = engine.state
     _states[project_id] = state
 
     if ch_num <= len(state.chapters):
         ch = state.chapters[ch_num - 1]
         return jsonify({
             "success": True,
+            "status": "awaiting_approval",
             "chapter": {
                 "number": ch.chapter_number,
                 "title": ch.title,
@@ -283,28 +278,42 @@ def api_run_chapter(project_id: str, ch_num: int):
 @app.route("/api/<project_id>/approve-chapter/<int:ch_num>", methods=["POST"])
 def api_approve_chapter(project_id: str, ch_num: int):
     """Approve or reject a chapter."""
-    data = request.get_json()
-    approved = data.get("approved", False)
-    feedback = data.get("feedback", "")
+    engine = _get_or_create_engine(project_id)
+    if not engine:
+        return jsonify({"error": "Project not found"}), 404
 
-    key = f"{project_id}_{ch_num}"
-    if key in _approval_results:
-        _approval_results[key]["approved"] = approved
-        _approval_results[key]["feedback"] = feedback
-    if key in _approval_events:
-        _approval_events[key].set()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("approved"), bool):
+        return jsonify({"error": "approved must be a boolean"}), 400
 
-    # Update state
-    state = _load_or_get_state(project_id)
-    if state and ch_num <= len(state.chapters):
-        state.chapters[ch_num - 1].approval = (
-            ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
-        )
-        state.chapters[ch_num - 1].human_feedback = feedback
-        state.save()
-        _states[project_id] = state
+    approved = data["approved"]
+    feedback = str(data.get("feedback", "")).strip()
+    if not approved and not feedback:
+        return jsonify({"error": "驳回章节时请填写修改意见。"}), 400
 
-    return jsonify({"success": True})
+    try:
+        state = engine.apply_chapter_decision(ch_num, approved, feedback)
+    except GraphExecutionError as exc:
+        return jsonify({
+            "success": False,
+            "status": "invalid_transition",
+            "node": exc.node_key,
+            "error": str(exc),
+        }), 409
+
+    _states[project_id] = state
+    if not approved:
+        next_action = "rewrite_chapter"
+    elif state.workflow_phase == "global_review":
+        next_action = "global_review"
+    else:
+        next_action = "next_chapter"
+
+    return jsonify({
+        "success": True,
+        "status": "approved" if approved else "rejected",
+        "next_action": next_action,
+    })
 
 
 @app.route("/api/<project_id>/run-global-review", methods=["POST"])
@@ -314,18 +323,23 @@ def api_run_global_review(project_id: str):
     if not engine:
         return jsonify({"error": "Project not found"}), 404
 
-    def run_review():
-        try:
-            engine.run_global_review_only()
-            engine.state.save()
-        except Exception as e:
-            engine.state.log(f"Global review error: {e}")
+    try:
+        state = engine.run_global_review_only()
+    except GraphExecutionError as exc:
+        state = engine.state
+        _states[project_id] = state
+        status_code = 409 if exc.code == "invalid_transition" else 422
+        return jsonify({
+            "success": False,
+            "status": (
+                "invalid_transition"
+                if exc.code == "invalid_transition"
+                else "failed"
+            ),
+            "node": exc.node_key,
+            "error": str(exc),
+        }), status_code
 
-    thread = threading.Thread(target=run_review, daemon=True)
-    thread.start()
-    thread.join(timeout=300)
-
-    state = engine.state
     _states[project_id] = state
 
     return jsonify({
@@ -395,6 +409,7 @@ def api_get_chapter(project_id: str, ch_num: int):
         "word_count": ch.word_count,
         "approval": ch.approval.value,
         "feedback": ch.human_feedback,
+        "revision_count": ch.revision_count,
         "consistency": ch.consistency_report,
         "outline": _serialize_dataclass(ch.outline) if ch.outline else None,
     })
@@ -556,7 +571,10 @@ def download_novel(project_id: str):
         novel_text += f"**Theme:** {state.novel_outline.theme}\n\n---\n\n"
 
     for ch in state.chapters:
-        if ch.polished_draft or ch.draft:
+        if (
+            ch.approval == ApprovalStatus.APPROVED
+            and (ch.polished_draft or ch.draft)
+        ):
             novel_text += f"## Chapter {ch.chapter_number}: {ch.title}\n\n"
             novel_text += (ch.polished_draft or ch.draft)
             novel_text += "\n\n"

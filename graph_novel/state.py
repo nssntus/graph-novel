@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-CURRENT_STATE_VERSION = 2
+CURRENT_STATE_VERSION = 3
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -116,6 +116,11 @@ class Chapter:
     word_count: int = 0
     chapter_hook: str = ""  # 章末钩子
     shuangdian_type: str = ""  # "" | "小爽点" | "大爽点" | "铺垫"
+    generation_meta: Dict[str, Any] = field(default_factory=dict)
+    rewrite_feedback: str = ""
+    revision_count: int = 0
+    revision_history: List[Dict[str, Any]] = field(default_factory=list)
+    side_effects_committed: bool = False
 
 
 @dataclass
@@ -305,7 +310,7 @@ def _deserialize_field(value: Any, field_type: Any) -> Any:
 
 
 def _migrate_state(state: GraphNovelState, source: Path) -> GraphNovelState:
-    """Fill version-2 checkpoint fields when loading older project files."""
+    """Fill checkpoint fields when loading older project files."""
     if not state.project_id:
         stem = source.stem
         if stem.endswith("_state") and stem != "graph_novel_state":
@@ -335,6 +340,22 @@ def _migrate_state(state: GraphNovelState, source: Path) -> GraphNovelState:
             state.workflow_phase = "chapter_loop"
         else:
             state.workflow_phase = "foundation"
+
+    if state.version < 3:
+        for chapter in state.chapters:
+            if chapter.approval == ApprovalStatus.APPROVED:
+                # Version-2 writing applied trackers before approval. Treat those
+                # effects as already committed so they are never applied twice.
+                chapter.side_effects_committed = True
+
+            node_key = f"human_approval_{chapter.chapter_number}"
+            if (
+                state.pending_gate is None
+                and state.node_status.get(node_key) == NodeStatus.IN_PROGRESS
+                and chapter.approval == ApprovalStatus.PENDING
+            ):
+                state.pending_gate = f"chapter:{chapter.chapter_number}"
+                state.workflow_phase = "chapter_loop"
 
     state.version = CURRENT_STATE_VERSION
     return state

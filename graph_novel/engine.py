@@ -121,6 +121,11 @@ class GraphNovelEngine:
         for ch_num in range(1, self.state.total_chapters + 1):
             self.state.current_chapter = ch_num
             self._run_chapter_pipeline(ch_num)
+            if self.state.chapters[ch_num - 1].approval != ApprovalStatus.APPROVED:
+                self.state.log(
+                    f"Chapter {ch_num} rejected. Restart with feedback."
+                )
+                return self.state
 
         # Phase 3: Global review
         self._run_global_review()
@@ -131,10 +136,8 @@ class GraphNovelEngine:
         return self.state
 
     def run_single_chapter(self, ch_num: int) -> GraphNovelState:
-        """Run the pipeline for a single chapter (for web-based step-by-step execution)."""
-        self.state.current_chapter = ch_num
+        """Generate one chapter and collect its decision (CLI/test compatibility)."""
         self._run_chapter_pipeline(ch_num)
-        self._save_outputs()
         return self.state
 
     def run_global_review_only(self) -> GraphNovelState:
@@ -275,7 +278,7 @@ class GraphNovelEngine:
         raise GraphExecutionError(node_key, message)
 
     def _execute_required_node(self, node_key: str, runner) -> None:
-        """Execute one Foundation node and normalize unexpected exceptions."""
+        """Execute one required node and normalize unexpected exceptions."""
         try:
             self.state = runner(self.state)
         except Exception as exc:
@@ -288,26 +291,61 @@ class GraphNovelEngine:
     # ------------------------------------------------------------------
 
     def _run_chapter_pipeline(self, ch_num: int) -> None:
+        """CLI/full-run wrapper: generate, collect a decision, then transition."""
+        self.run_chapter_generation(ch_num)
+        approved, feedback = human_approval.request_chapter_decision(
+            self.state,
+            ch_num,
+            wait_callback=self._approval_callback,
+        )
+        self.apply_chapter_decision(ch_num, approved, feedback)
+
+    def run_chapter_generation(self, ch_num: int) -> GraphNovelState:
+        """Run nodes 4-7 and stop at the persisted chapter approval Gate."""
+        self._validate_chapter_generation_transition(ch_num)
         self.phase = GraphPhase.CHAPTER_LOOP
+        self.state.workflow_phase = "chapter_loop"
+        self.state.pending_gate = None
+        self.state.current_chapter = ch_num
+        self.state.last_error = {}
         self.state.log("="*50)
         self.state.log(f"PHASE 2: Chapter {ch_num}/{self.state.total_chapters}")
+
+        chapter = self.state.chapters[ch_num - 1]
+        if chapter.approval == ApprovalStatus.REJECTED:
+            self._prepare_chapter_revision(
+                chapter,
+                chapter.human_feedback or "人工驳回后重写",
+                source="human",
+            )
 
         max_rewrites = 2  # Maximum rewrite attempts per chapter
         rewrite_count = 0
 
         while True:
             # Node 4: Chapter Planning
-            self.state = chapter_planning.run_node(self.state)
+            self._execute_required_node(
+                f"chapter_planning_{ch_num}",
+                chapter_planning.run_node,
+            )
 
             # Node 5: Chapter Writing
-            self.state = writing.run_node(self.state)
+            self._execute_required_node(f"writing_{ch_num}", writing.run_node)
 
             if not self.state.chapters[ch_num - 1].draft:
-                self.state.log(f"Chapter {ch_num} writing produced no draft, aborting.")
-                break
+                message = f"Chapter {ch_num} writing produced no draft."
+                self.state.node_status[f"writing_{ch_num}"] = NodeStatus.FAILED
+                self.state.last_error = {
+                    "node": f"writing_{ch_num}",
+                    "message": message,
+                }
+                self._require_completed(f"writing_{ch_num}")
 
             # Node 6: Consistency Review
-            self.state = consistency_review.run_node(self.state)
+            self._execute_required_node(
+                f"consistency_review_{ch_num}",
+                consistency_review.run_node,
+            )
 
             # Check if rewrite is needed
             chapter = self.state.chapters[ch_num - 1]
@@ -321,7 +359,11 @@ class GraphNovelEngine:
                     f"Chapter {ch_num} needs rewrite (score {score}/10). "
                     f"Attempt {rewrite_count}/{max_rewrites}"
                 )
-                # Feed issues back into planning for rewrite
+                self._prepare_chapter_revision(
+                    chapter,
+                    self._format_review_feedback(review),
+                    source="consistency_review",
+                )
                 continue
             else:
                 if rewrite_count > 0:
@@ -331,23 +373,195 @@ class GraphNovelEngine:
                 break
 
         # Node 7: Style Polish
-        self.state = style_polish.run_node(self.state)
-
-        # Node 8: Human Approval (per chapter)
-        self.state = human_approval.run_node(
-            self.state,
-            wait_callback=self._approval_callback,
+        self._execute_required_node(
+            f"style_polish_{ch_num}",
+            style_polish.run_node,
         )
+
+        # Node 8 is a persisted Gate. A separate decision resumes the graph.
+        chapter = self.state.chapters[ch_num - 1]
+        chapter.approval = ApprovalStatus.PENDING
+        self.state.node_status[f"human_approval_{ch_num}"] = NodeStatus.IN_PROGRESS
+        self.state.pending_gate = f"chapter:{ch_num}"
+        self.state.save()
+        self.state.log(
+            f"Chapter {ch_num} generated — awaiting human approval."
+        )
+        return self.state
+
+    def apply_chapter_decision(
+        self,
+        ch_num: int,
+        approved: bool,
+        feedback: str = "",
+    ) -> GraphNovelState:
+        """Resume the graph from one chapter approval Gate."""
+        node_key = f"human_approval_{ch_num}"
+        if (
+            self.state.pending_gate != f"chapter:{ch_num}"
+            or self.state.node_status.get(node_key) != NodeStatus.IN_PROGRESS
+        ):
+            raise GraphExecutionError(
+                node_key,
+                f"Chapter {ch_num} is not waiting for approval.",
+                code="invalid_transition",
+            )
+
+        chapter = self.state.chapters[ch_num - 1]
+        chapter.approval = (
+            ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
+        )
+        chapter.human_feedback = feedback.strip()
+        self.state.node_status[node_key] = NodeStatus.COMPLETED
+        self.state.pending_gate = None
+
+        if approved:
+            self._commit_chapter_side_effects(ch_num)
+            all_approved = all(
+                item.approval == ApprovalStatus.APPROVED
+                for item in self.state.chapters[:self.state.total_chapters]
+            )
+            self.state.workflow_phase = (
+                "global_review" if all_approved else "chapter_loop"
+            )
+            self.state.log(f"Chapter {ch_num} approved.")
+            self._save_outputs()
+        else:
+            self.state.workflow_phase = "chapter_loop"
+            self.state.log(
+                f"Chapter {ch_num} rejected — feedback saved for rewrite."
+            )
+            self.state.save()
+
+        return self.state
+
+    def _validate_chapter_generation_transition(self, ch_num: int) -> None:
+        if not self._is_foundation_approved():
+            raise GraphExecutionError(
+                "human_approval_foundation",
+                "Foundation must be approved before writing chapters.",
+                code="invalid_transition",
+            )
+        if ch_num < 1 or ch_num > self.state.total_chapters:
+            raise GraphExecutionError(
+                f"chapter_{ch_num}",
+                f"Chapter number must be between 1 and {self.state.total_chapters}.",
+                code="invalid_transition",
+            )
+        if self.state.pending_gate:
+            raise GraphExecutionError(
+                self.state.pending_gate,
+                f"Graph is already waiting at {self.state.pending_gate}.",
+                code="invalid_transition",
+            )
+
+        while len(self.state.chapters) < self.state.total_chapters:
+            number = len(self.state.chapters) + 1
+            self.state.chapters.append(
+                Chapter(chapter_number=number, title=f"第{number}章")
+            )
+
+        chapter = self.state.chapters[ch_num - 1]
+        if chapter.approval == ApprovalStatus.APPROVED:
+            raise GraphExecutionError(
+                f"human_approval_{ch_num}",
+                f"Approved chapter {ch_num} cannot be regenerated.",
+                code="invalid_transition",
+            )
+
+    @staticmethod
+    def _format_review_feedback(review: dict) -> str:
+        issues = review.get("issues", [])
+        if not issues:
+            return review.get("summary", "一致性审查要求重写")
+        lines = ["一致性审查要求重写："]
+        for issue in issues:
+            description = issue.get("description", "")
+            suggestion = issue.get("suggested_fix", "")
+            line = f"- {description}"
+            if suggestion:
+                line += f"；修改建议：{suggestion}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _prepare_chapter_revision(
+        chapter: Chapter,
+        feedback: str,
+        source: str,
+    ) -> None:
+        if chapter.draft or chapter.polished_draft or chapter.consistency_report:
+            chapter.revision_history.append({
+                "revision": chapter.revision_count,
+                "source": source,
+                "feedback": feedback,
+                "title": chapter.title,
+                "draft": chapter.draft,
+                "polished_draft": chapter.polished_draft,
+                "consistency_report": chapter.consistency_report,
+                "generation_meta": chapter.generation_meta,
+                "human_feedback": chapter.human_feedback,
+            })
+            chapter.revision_count += 1
+
+        chapter.rewrite_feedback = feedback
+        chapter.draft = ""
+        chapter.polished_draft = ""
+        chapter.consistency_report = {}
+        chapter.generation_meta = {}
+        chapter.word_count = 0
+        chapter.chapter_hook = ""
+        chapter.shuangdian_type = ""
+        chapter.approval = ApprovalStatus.PENDING
+        chapter.human_feedback = ""
+        chapter.side_effects_committed = False
+
+    def _commit_chapter_side_effects(self, ch_num: int) -> None:
+        chapter = self.state.chapters[ch_num - 1]
+        if chapter.side_effects_committed:
+            return
+
+        writing.commit_generation_meta(self.state, ch_num)
+        consistency_review.commit_arc_updates(self.state, ch_num)
+        while len(self.state.chapter_hooks) < ch_num:
+            self.state.chapter_hooks.append("")
+        self.state.chapter_hooks[ch_num - 1] = chapter.chapter_hook
+        chapter.side_effects_committed = True
 
     # ------------------------------------------------------------------
     # Phase 3: Global Review
     # ------------------------------------------------------------------
 
     def _run_global_review(self) -> None:
+        self._validate_global_review_transition()
         self.phase = GraphPhase.GLOBAL_REVIEW
+        self.state.workflow_phase = "global_review"
+        self.state.last_error = {}
         self.state.log("="*50)
         self.state.log("PHASE 3: Global Review")
-        self.state = global_review.run_node(self.state)
+        self._execute_required_node("global_review", global_review.run_node)
+        self.state.workflow_phase = "done"
+
+    def _validate_global_review_transition(self) -> None:
+        if self.state.pending_gate:
+            raise GraphExecutionError(
+                self.state.pending_gate,
+                f"Graph is already waiting at {self.state.pending_gate}.",
+                code="invalid_transition",
+            )
+        if (
+            self.state.total_chapters <= 0
+            or len(self.state.chapters) < self.state.total_chapters
+            or any(
+                chapter.approval != ApprovalStatus.APPROVED
+                for chapter in self.state.chapters[:self.state.total_chapters]
+            )
+        ):
+            raise GraphExecutionError(
+                "global_review",
+                "All chapters must be approved before global review.",
+                code="invalid_transition",
+            )
 
     # ------------------------------------------------------------------
     # Output
@@ -364,7 +578,7 @@ class GraphNovelEngine:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         for ch in self.state.chapters:
-            if ch.polished_draft:
+            if ch.approval == ApprovalStatus.APPROVED and ch.polished_draft:
                 shuangdian = getattr(ch, 'shuangdian_type', '') or ''
                 hook = getattr(ch, 'chapter_hook', '') or ''
                 review_score = ch.consistency_report.get('overall_score', 'N/A') if ch.consistency_report else 'N/A'
@@ -395,7 +609,7 @@ class GraphNovelEngine:
                 novel_text += "\n---\n\n"
 
         for ch in self.state.chapters:
-            if ch.polished_draft:
+            if ch.approval == ApprovalStatus.APPROVED and ch.polished_draft:
                 shuangdian = getattr(ch, 'shuangdian_type', '')
                 hook = getattr(ch, 'chapter_hook', '')
                 novel_text += f"## 第{ch.chapter_number}章：{ch.title}\n\n"

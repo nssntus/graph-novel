@@ -10,7 +10,6 @@ import json
 import os
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -361,6 +360,9 @@ def test_consistency_rewrite_loop():
 
     # Should have triggered rewrite: first review score=3 → rewrite → second review score=7
     assert call_count["review"] >= 2, f"Expected at least 2 review calls, got {call_count['review']}"
+    writing_prompts = [call.args[1] for call in mock_write.call_args_list]
+    assert "Major OOC" in writing_prompts[1]
+    assert len(state.chapters[0].revision_history) == 1
 
     print("✓ PASSED")
 
@@ -374,6 +376,7 @@ def test_global_review():
         ch.draft = MOCK_CHAPTER_DRAFT
         ch.polished_draft = MOCK_CHAPTER_DRAFT
         ch.consistency_report = MOCK_CONSISTENCY_REPORT
+        ch.approval = ApprovalStatus.APPROVED
 
     engine = GraphNovelEngine(state)
 
@@ -392,6 +395,51 @@ def test_global_review():
     reloaded = GraphNovelState.from_json(state_path)
     assert reloaded.global_review_report["overall_score"] == 8
 
+    print("✓ PASSED")
+
+
+def test_global_review_guards_and_failure():
+    """Global review requires approved chapters and exposes node failure."""
+    print("  Testing global review guards + failure...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+    from graph_novel.web.app import app as flask_app, _engines, _states
+
+    state = make_sample_state()
+    engine = GraphNovelEngine(state)
+    with mock.patch("graph_novel.nodes.global_review.call_llm_sync") as llm_call:
+        try:
+            engine.run_global_review_only()
+            raise AssertionError("Expected unapproved chapters to block review")
+        except GraphExecutionError as exc:
+            assert exc.code == "invalid_transition"
+            assert exc.node_key == "global_review"
+    llm_call.assert_not_called()
+
+    project_id = "global_review_failure"
+    state.project_id = project_id
+    state.save_dir = TEST_PROJECTS_DIR / project_id
+    state.foundation_approval = ApprovalStatus.APPROVED
+    for chapter in state.chapters:
+        chapter.approval = ApprovalStatus.APPROVED
+    state.save()
+    _states[project_id] = state
+    _engines[project_id] = engine
+
+    with flask_app.test_client() as client, \
+         mock.patch(
+             "graph_novel.nodes.global_review.call_llm_sync",
+             return_value="not-json",
+         ):
+        response = client.post(f"/api/{project_id}/run-global-review")
+        payload = response.get_json()
+
+    assert response.status_code == 422
+    assert payload["success"] is False
+    assert payload["status"] == "failed"
+    assert payload["node"] == "global_review"
+    assert state.workflow_phase == "failed"
+    assert state.node_status["global_review"] == NodeStatus.FAILED
+    assert state.last_error["node"] == "global_review"
     print("✓ PASSED")
 
 
@@ -718,10 +766,26 @@ def test_project_inputs_and_legacy_state_migration():
     legacy_path.write_text(json.dumps(legacy_data, ensure_ascii=False), encoding="utf-8")
 
     loaded = GraphNovelState.from_json(legacy_path)
-    assert loaded.version == 2
+    assert loaded.version == 3
     assert loaded.target_total_chapters == loaded.total_chapters
     assert loaded.foundation_approval == ApprovalStatus.APPROVED
     assert loaded.workflow_phase == "chapter_loop"
+
+    version_two = make_sample_state()
+    version_two.version = 2
+    version_two.foundation_approval = ApprovalStatus.APPROVED
+    version_two.chapters[0].approval = ApprovalStatus.APPROVED
+    version_two.node_status["human_approval_2"] = NodeStatus.IN_PROGRESS
+    version_two_path = Path(tempfile.mkdtemp()) / "version_two_state.json"
+    version_two_path.write_text(
+        version_two.to_json(),
+        encoding="utf-8",
+    )
+
+    migrated = GraphNovelState.from_json(version_two_path)
+    assert migrated.version == 3
+    assert migrated.chapters[0].side_effects_committed
+    assert migrated.pending_gate == "chapter:2"
     print("✓ PASSED")
 
 
@@ -812,6 +876,181 @@ def test_foundation_web_api_contract():
     print("✓ PASSED")
 
 
+def _chapter_pipeline_mocks():
+    """Return deterministic chapter generation payloads."""
+    plan = json.dumps({
+        "chapter_number": 1,
+        "title": "黑蜡封印",
+        "scene_plan": [],
+        "pov_character": "Aria",
+        "opening_hook": "刺客闯入",
+        "closing_hook": "黑蜡封印裂开",
+        "dialogue_highlights": [],
+        "shuangdian_beat": "小爽点",
+        "continuity_notes": {},
+        "ai_taboos_check": [],
+    })
+    write = MOCK_CHAPTER_DRAFT + "\n\n---META---\n" + json.dumps({
+        "chapter_hook": "黑蜡封印突然裂开",
+        "shuangdian_beat": "小爽点",
+        "foreshadowing_planted": [{
+            "description": "黑蜡封印隐藏王室秘密",
+            "scene_context": "王座厅",
+        }],
+        "foreshadowing_paid": [],
+        "character_moments": {
+            "Aria": "第一次公开质疑国王",
+        },
+    })
+    review = dict(MOCK_CONSISTENCY_REPORT)
+    review["character_arc_updates"] = {"Aria": "rising_action"}
+    return plan, write, json.dumps(review), MOCK_CHAPTER_DRAFT
+
+
+def test_chapter_gate_feedback_and_side_effect_commit():
+    """Chapter generation pauses at Gate; only approval commits global effects."""
+    print("  Testing Chapter gate + delayed side effects...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+
+    state = make_sample_state()
+    state.project_id = "chapter_gate"
+    state.foundation_approval = ApprovalStatus.APPROVED
+    state.workflow_phase = "chapter_loop"
+    engine = GraphNovelEngine(state)
+    engine.set_approval_callback(
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("generation must not wait for chapter approval")
+        )
+    )
+    plan, write, review, polish = _chapter_pipeline_mocks()
+
+    with mock.patch("graph_novel.nodes.chapter_planning.call_llm_sync", return_value=plan) as plan_call, \
+         mock.patch("graph_novel.nodes.writing.call_llm_sync", return_value=write) as write_call, \
+         mock.patch("graph_novel.nodes.consistency_review.call_llm_sync", return_value=review), \
+         mock.patch("graph_novel.nodes.style_polish.call_llm_sync", return_value=polish):
+        engine.run_chapter_generation(1)
+        chapter = state.chapters[0]
+
+        assert state.pending_gate == "chapter:1"
+        assert chapter.approval == ApprovalStatus.PENDING
+        assert chapter.generation_meta["chapter_hook"] == "黑蜡封印突然裂开"
+        assert not state.foreshadowing_tracker
+        assert state.character_arc_tracker["Aria"].current_stage == ArcStage.INCITING_INCIDENT
+        assert not chapter.side_effects_committed
+
+        engine.apply_chapter_decision(1, False, "主角反击不够果断")
+        assert chapter.approval == ApprovalStatus.REJECTED
+        assert chapter.human_feedback == "主角反击不够果断"
+        assert not state.foreshadowing_tracker
+
+        engine.run_chapter_generation(1)
+        assert "主角反击不够果断" in plan_call.call_args.args[1]
+        assert "主角反击不够果断" in write_call.call_args.args[1]
+        assert len(chapter.revision_history) == 1
+
+        engine.apply_chapter_decision(1, True, "")
+        assert chapter.approval == ApprovalStatus.APPROVED
+        assert chapter.side_effects_committed
+        assert len(state.foreshadowing_tracker) == 1
+        assert state.foreshadowing_tracker[0].id == "fs_ch01_01"
+        assert state.character_arc_tracker["Aria"].current_stage == ArcStage.RISING_ACTION
+        assert state.character_arc_tracker["Aria"].per_chapter_status["1"] == "第一次公开质疑国王"
+        assert state.chapter_hooks[0] == "黑蜡封印突然裂开"
+
+    try:
+        engine.apply_chapter_decision(1, True, "")
+        raise AssertionError("Expected duplicate chapter decision to fail")
+    except GraphExecutionError:
+        pass
+
+    print("✓ PASSED")
+
+
+def test_chapter_failure_stops_before_gate():
+    """A failed chapter node persists FAILED state and never opens the Gate."""
+    print("  Testing Chapter failure routing...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+
+    state = make_sample_state()
+    state.foundation_approval = ApprovalStatus.APPROVED
+    state.workflow_phase = "chapter_loop"
+    engine = GraphNovelEngine(state)
+    plan, write, review, _ = _chapter_pipeline_mocks()
+
+    with mock.patch("graph_novel.nodes.chapter_planning.call_llm_sync", return_value=plan), \
+         mock.patch("graph_novel.nodes.writing.call_llm_sync", return_value=write), \
+         mock.patch("graph_novel.nodes.consistency_review.call_llm_sync", return_value=review), \
+         mock.patch("graph_novel.nodes.style_polish.call_llm_sync", return_value=""):
+        try:
+            engine.run_chapter_generation(1)
+            raise AssertionError("Expected style polish failure")
+        except GraphExecutionError as exc:
+            assert exc.node_key == "style_polish_1"
+
+    assert state.workflow_phase == "failed"
+    assert state.pending_gate is None
+    assert state.node_status["style_polish_1"] == NodeStatus.FAILED
+    assert state.last_error["node"] == "style_polish_1"
+    assert state.chapters[0].approval == ApprovalStatus.PENDING
+    assert not state.chapters[0].side_effects_committed
+    print("✓ PASSED")
+
+
+def test_chapter_web_api_contract():
+    """Chapter Web API exposes a persisted Gate and truthful decision edge."""
+    print("  Testing Chapter Web API contract...", end=" ")
+    from graph_novel.web.app import app as flask_app, _engines, _states
+
+    project_id = "chapter_web_api"
+    state = make_sample_state()
+    state.project_id = project_id
+    state.save_dir = TEST_PROJECTS_DIR / project_id
+    state.foundation_approval = ApprovalStatus.APPROVED
+    state.workflow_phase = "chapter_loop"
+    state.save()
+    _states[project_id] = state
+    _engines.pop(project_id, None)
+    plan, write, review, polish = _chapter_pipeline_mocks()
+
+    with flask_app.test_client() as client, \
+         mock.patch("graph_novel.nodes.chapter_planning.call_llm_sync", return_value=plan), \
+         mock.patch("graph_novel.nodes.writing.call_llm_sync", return_value=write), \
+         mock.patch("graph_novel.nodes.consistency_review.call_llm_sync", return_value=review), \
+         mock.patch("graph_novel.nodes.style_polish.call_llm_sync", return_value=polish):
+        response = client.post(f"/api/{project_id}/run-chapter/1")
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["success"] is True
+        assert payload["status"] == "awaiting_approval"
+
+        response = client.post(
+            f"/api/{project_id}/approve-chapter/1",
+            json={"approved": False, "feedback": ""},
+        )
+        assert response.status_code == 400
+
+        response = client.post(
+            f"/api/{project_id}/approve-chapter/1",
+            json={"approved": False, "feedback": "增强章末反转"},
+        )
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["next_action"] == "rewrite_chapter"
+
+        response = client.post(f"/api/{project_id}/run-chapter/1")
+        assert response.status_code == 200
+        response = client.post(
+            f"/api/{project_id}/approve-chapter/1",
+            json={"approved": True, "feedback": ""},
+        )
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["status"] == "approved"
+        assert state.chapters[0].side_effects_committed
+
+    print("✓ PASSED")
+
+
 # ======================================================================
 # Main
 # ======================================================================
@@ -827,6 +1066,7 @@ def run_all_tests():
         test_chapter_pipeline_with_mocks,
         test_consistency_rewrite_loop,
         test_global_review,
+        test_global_review_guards_and_failure,
         test_foreshadowing_tracker,
         test_web_app_config,
         test_web_api_state,
@@ -834,6 +1074,9 @@ def run_all_tests():
         test_foundation_gate_and_feedback_edge,
         test_foundation_failure_stops_graph,
         test_foundation_web_api_contract,
+        test_chapter_gate_feedback_and_side_effect_commit,
+        test_chapter_failure_stops_before_gate,
+        test_chapter_web_api_contract,
     ]
 
     passed = 0

@@ -95,29 +95,33 @@ POV角色：{outline.pov_character if outline else '主角'}
 == 伏笔追踪 ==
 {fs_text}
 
+== 本轮重写反馈 ==
+{chapter.rewrite_feedback or '无'}
+
 ---
 请写出2000-2500字的章节正文。记住：对话驱动、手机阅读适配、章末强钩子、避免AI写作禁忌。"""
 
     try:
         raw = call_llm_sync(SYSTEM_PROMPT, user_prompt, max_tokens=8192, temperature=0.85)
         prose, meta = _parse_response(raw)
+        if not prose:
+            raise ValueError("章节写作响应没有正文")
+        meta = _validate_generation_meta(meta)
 
         chapter.draft = prose
         chapter.word_count = len(prose.replace(' ', ''))  # 中文按字数算
+        chapter.generation_meta = meta
 
         if meta:
             chapter.chapter_hook = meta.get("chapter_hook", "")
             chapter.shuangdian_type = meta.get("shuangdian_beat", "")
-            _update_foreshadowing(state, meta, ch_num)
-            _update_arcs(state, meta, ch_num)
 
         state.node_status[f"writing_{ch_num}"] = NodeStatus.COMPLETED
         state.log(f"节点5: 章节写作 — 第{ch_num}章完成（{chapter.word_count}字）| 钩子：{chapter.chapter_hook[:30]}")
     except Exception as e:
         state.node_status[f"writing_{ch_num}"] = NodeStatus.FAILED
+        state.last_error = {"node": f"writing_{ch_num}", "message": str(e)}
         state.log(f"节点5: 章节写作 — 失败: {e}")
-        if not chapter.draft:
-            chapter.draft = f"[第{ch_num}章写作失败：{e}]"
 
     return state
 
@@ -140,9 +144,38 @@ def _parse_response(text: str) -> Tuple[str, Optional[dict]]:
     return text.strip(), None
 
 
+def _validate_generation_meta(meta: Optional[dict]) -> dict:
+    """Reject malformed META before it can reach the approval commit."""
+    if meta is None:
+        return {}
+    if not isinstance(meta, dict):
+        raise ValueError("章节 META 必须是 JSON 对象")
+
+    for key in ("foreshadowing_planted", "foreshadowing_paid"):
+        items = meta.get(key, [])
+        if not isinstance(items, list) or any(
+            not isinstance(item, dict) for item in items
+        ):
+            raise ValueError(f"章节 META 的 {key} 必须是对象列表")
+
+    if not isinstance(meta.get("character_moments", {}), dict):
+        raise ValueError("章节 META 的 character_moments 必须是 JSON 对象")
+    return meta
+
+
+def commit_generation_meta(state: GraphNovelState, ch_num: int) -> None:
+    """Idempotently commit accepted writing META into global trackers."""
+    chapter = state.chapters[ch_num - 1]
+    meta = chapter.generation_meta
+    _update_foreshadowing(state, meta, ch_num)
+    _update_arcs(state, meta, ch_num)
+
+
 def _update_foreshadowing(state: GraphNovelState, meta: dict, ch_num: int) -> None:
-    for fp in meta.get("foreshadowing_planted", []):
-        fid = f"fs_{len(state.foreshadowing_tracker) + 1:03d}"
+    for index, fp in enumerate(meta.get("foreshadowing_planted", []), start=1):
+        fid = f"fs_ch{ch_num:02d}_{index:02d}"
+        if any(existing.id == fid for existing in state.foreshadowing_tracker):
+            continue
         state.foreshadowing_tracker.append(Foreshadowing(
             id=fid,
             description=fp.get("description", ""),
