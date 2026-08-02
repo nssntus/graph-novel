@@ -181,7 +181,7 @@ async function monitorFoundationTask(taskId) {
     renderProjectTaskStatus(banner, payload);
     if (payload.status === 'running') {
       status.innerHTML = '<p class="muted">后台任务运行中，当前节点：'
-        + (payload.current_node_label || '初始化') + '</p>';
+        + escapeHtml(payload.current_node_label || '初始化') + '</p>';
     }
   });
 
@@ -208,11 +208,11 @@ async function generateFoundation() {
     if (resp.status === 202 && data.success) {
       await monitorFoundationTask(data.task.id);
     } else {
-      status.innerHTML = `<p class="alert alert-error">启动失败：${data.error || '未知错误'}</p>`;
+      status.innerHTML = `<p class="alert alert-error">启动失败：${escapeHtml(data.error || '未知错误')}</p>`;
       setFoundationRunning(false);
     }
   } catch (err) {
-    status.innerHTML = `<p class="alert alert-error">连接错误：${err.message}</p>`;
+    status.innerHTML = `<p class="alert alert-error">连接错误：${escapeHtml(err.message)}</p>`;
     setFoundationRunning(false);
   }
 }
@@ -230,7 +230,7 @@ async function resumeFoundationTask() {
     }
   } catch (err) {
     document.getElementById('project-task-status').innerHTML =
-      `<p class="alert alert-error">状态读取失败：${err.message}</p>`;
+      `<p class="alert alert-error">状态读取失败：${escapeHtml(err.message)}</p>`;
   }
 }
 
@@ -257,10 +257,10 @@ async function approveFoundation(approved) {
         setTimeout(() => { location.reload(); }, 800);
       }
     } else {
-      status.innerHTML = `<p class="alert alert-error">${data.error || '审批失败'}</p>`;
+      status.innerHTML = `<p class="alert alert-error">${escapeHtml(data.error || '审批失败')}</p>`;
     }
   } catch (err) {
-    status.innerHTML = `<p class="alert alert-error">错误：${err.message}</p>`;
+    status.innerHTML = `<p class="alert alert-error">错误：${escapeHtml(err.message)}</p>`;
   }
 }
 

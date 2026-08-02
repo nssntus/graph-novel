@@ -196,8 +196,11 @@ MOCK_CONSISTENCY_REPORT = {
     "ai_disease_count": 0,
     "dialogue_ratio_estimate": "60%",
     "requires_rewrite": False,
+    "rewrite_scope": "none",
     "logic_gate_passed": True,
+    "bridge_gate_passed": True,
     "narrative_audit": {
+        "chapter_bridge": "本章开场直接承接上一章结束状态。",
         "causality": "关键事件均有前置原因。",
         "knowledge_provenance": "角色新增认知均有目击或转述来源。",
         "continuity": "时间、位置、伤势和资源连续。",
@@ -278,6 +281,21 @@ def mock_chapter_plan(title="Test", chapter_number=1):
             "word_count_target": 2200,
         }],
         "pov_character": "Aria",
+        "opening_bridge": {
+            "previous_chapter": max(0, chapter_number - 1),
+            "inherited_endpoint": (
+                "第一章，无前文"
+                if chapter_number == 1
+                else "上一章结束时 Aria 仍在现场"
+            ),
+            "transition_steps": [
+                "直接承接上一章结束状态"
+                if chapter_number > 1
+                else "从故事起点开始"
+            ],
+            "first_scene_start": "Aria 在王座厅接到命令",
+            "carry_over_threads": [],
+        },
         "opening_hook": "刺客闯入",
         "closing_hook": "黑蜡封印裂开",
         "dialogue_highlights": [],
@@ -316,6 +334,28 @@ def mock_chapter_response(prose=MOCK_CHAPTER_DRAFT):
             "character_locations": {"Aria": "王城外"},
             "character_conditions": {"Aria": "健康"},
             "resources": {"Aria": ["密封卷轴"]},
+        },
+        "continuity_checkpoint": {
+            "last_scene": {
+                "time": "中午",
+                "location": "王城东部森林",
+                "pov_character": "Aria",
+                "characters_present": ["Aria"],
+                "final_action": "Aria 找到带有王室印记的硬币",
+                "final_dialogue": "",
+            },
+            "active_goals": [{
+                "character": "Aria",
+                "goal": "查明刺客的幕后主使",
+                "next_action": "检查王室硬币的来源",
+            }],
+            "unresolved_actions": ["确认王室硬币为何在刺客身上"],
+            "open_threads": [{
+                "thread_id": "thread.black_wax_conspiracy",
+                "description": "黑蜡密令与王室刺客之间的联系",
+                "urgency": "high",
+            }],
+            "relationship_changes": {},
         },
     })
 
@@ -431,6 +471,20 @@ def test_chapter_pipeline_with_mocks():
                 "character_conditions": {"Aria": "健康"},
                 "resources": {"Aria": ["密封卷轴"]},
             },
+            "continuity_checkpoint": {
+                "last_scene": {
+                    "time": "中午",
+                    "location": "王城东部森林",
+                    "pov_character": "Aria",
+                    "characters_present": ["Aria"],
+                    "final_action": "Aria 找到带有王室印记的硬币",
+                    "final_dialogue": "",
+                },
+                "active_goals": [],
+                "unresolved_actions": ["检查硬币来源"],
+                "open_threads": [],
+                "relationship_changes": {},
+            },
         })
         mock_review.return_value = json.dumps(MOCK_CONSISTENCY_REPORT)
         mock_polish.return_value = MOCK_CHAPTER_DRAFT
@@ -479,8 +533,11 @@ def test_consistency_rewrite_loop():
         "ai_disease_count": 1,
         "dialogue_ratio_estimate": "40%",
         "requires_rewrite": True,
+        "rewrite_scope": "polish",
         "logic_gate_passed": True,
+        "bridge_gate_passed": True,
         "narrative_audit": {
+            "chapter_bridge": "已核对。",
             "causality": "已核对。",
             "knowledge_provenance": "已核对。",
             "continuity": "已核对。",
@@ -499,8 +556,11 @@ def test_consistency_rewrite_loop():
         "ai_disease_count": 0,
         "dialogue_ratio_estimate": "60%",
         "requires_rewrite": False,
+        "rewrite_scope": "none",
         "logic_gate_passed": True,
+        "bridge_gate_passed": True,
         "narrative_audit": {
+            "chapter_bridge": "已核对。",
             "causality": "已核对。",
             "knowledge_provenance": "已核对。",
             "continuity": "已核对。",
@@ -529,12 +589,165 @@ def test_consistency_rewrite_loop():
 
         engine.run_single_chapter(1)
 
-    # Should have triggered rewrite: first review score=3 → rewrite → second review score=7
+    # A style-only failure should return to polish without rewriting prose.
     assert call_count["review"] >= 2, f"Expected at least 2 review calls, got {call_count['review']}"
-    writing_prompts = [call.args[1] for call in mock_write.call_args_list]
-    assert "Major OOC" in writing_prompts[1]
+    assert mock_plan.call_count == 1
+    assert mock_write.call_count == 1
+    assert mock_polish.call_count == 2
+    polish_prompts = [call.args[1] for call in mock_polish.call_args_list]
+    assert "Major OOC" in polish_prompts[1]
     assert len(state.chapters[0].revision_history) == 1
 
+    print("✓ PASSED")
+
+
+def test_consistency_reviews_final_polished_candidate():
+    """The approval Gate must receive a polished draft already reviewed."""
+    print("  Testing final polished candidate review...", end=" ")
+
+    state = make_sample_state()
+    engine = GraphNovelEngine(state)
+    final_text = MOCK_CHAPTER_DRAFT + "\n\nFINAL_POLISHED_MARKER"
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=mock_chapter_plan(),
+    ), mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=mock_chapter_response(),
+    ), mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=final_text,
+    ), mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=json.dumps(MOCK_CONSISTENCY_REPORT),
+    ) as review_call:
+        engine.run_chapter_generation(1)
+
+    assert "FINAL_POLISHED_MARKER" in review_call.call_args.args[1]
+    finished = [
+        event["node"]
+        for event in state.execution_events
+        if event["event"] == "node_finished"
+    ]
+    assert finished == [
+        "chapter_planning_1",
+        "writing_1",
+        "style_polish_1",
+        "consistency_review_1",
+    ]
+    assert state.pending_gate == "chapter:1"
+    print("✓ PASSED")
+
+
+def test_review_scope_selects_the_smallest_rewrite_edge():
+    """Plan, prose and style failures return to different graph nodes."""
+    print("  Testing scoped review edges...", end=" ")
+
+    expected = {
+        "plan": (2, 2, 2),
+        "writing": (1, 2, 2),
+        "polish": (1, 1, 2),
+    }
+    for scope, counts in expected.items():
+        state = make_sample_state()
+        engine = GraphNovelEngine(state)
+        blocked = dict(MOCK_CONSISTENCY_REPORT)
+        blocked.update({
+            "overall_score": 3,
+            "issues": [{
+                "severity": "严重",
+                "category": "节奏",
+                "description": f"需要返回 {scope} 节点修复",
+                "location_hint": "本章",
+                "suggested_fix": "按指定范围修复",
+            }],
+            "requires_rewrite": True,
+            "rewrite_scope": scope,
+            "summary": f"{scope} scope failure",
+        })
+
+        with mock.patch(
+            "graph_novel.nodes.chapter_planning.call_llm_sync",
+            return_value=mock_chapter_plan(),
+        ) as plan_call, mock.patch(
+            "graph_novel.nodes.writing.call_llm_sync",
+            return_value=mock_chapter_response(),
+        ) as write_call, mock.patch(
+            "graph_novel.nodes.style_polish.call_llm_sync",
+            return_value=MOCK_CHAPTER_DRAFT,
+        ) as polish_call, mock.patch(
+            "graph_novel.nodes.consistency_review.call_llm_sync",
+            side_effect=[
+                json.dumps(blocked, ensure_ascii=False),
+                json.dumps(MOCK_CONSISTENCY_REPORT, ensure_ascii=False),
+            ],
+        ):
+            engine.run_chapter_generation(1)
+
+        assert (
+            plan_call.call_count,
+            write_call.call_count,
+            polish_call.call_count,
+        ) == counts
+    print("✓ PASSED")
+
+
+def test_rewrite_budgets_are_independent_and_persisted():
+    """Writer contract retries must not consume review rewrite capacity."""
+    print("  Testing independent rewrite budgets...", end=" ")
+
+    state = make_sample_state()
+    engine = GraphNovelEngine(state)
+    invalid_meta = json.loads(
+        mock_chapter_response().split("---META---", 1)[1]
+    )
+    invalid_meta["facts_established"] = [{
+        "fact_id": "fact.unplanned",
+        "statement": "规划外事实",
+        "category": "logic",
+        "visibility": "private",
+    }]
+    invalid_response = (
+        MOCK_CHAPTER_DRAFT
+        + "\n\n---META---\n"
+        + json.dumps(invalid_meta, ensure_ascii=False)
+    )
+    blocked = dict(MOCK_CONSISTENCY_REPORT)
+    blocked.update({
+        "overall_score": 3,
+        "requires_rewrite": True,
+        "rewrite_scope": "writing",
+        "summary": "正文执行需要重写",
+    })
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=mock_chapter_plan(),
+    ) as plan_call, mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        side_effect=[
+            invalid_response,
+            mock_chapter_response(),
+            mock_chapter_response(),
+        ],
+    ), mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=MOCK_CHAPTER_DRAFT,
+    ), mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        side_effect=[
+            json.dumps(blocked, ensure_ascii=False),
+            json.dumps(MOCK_CONSISTENCY_REPORT, ensure_ascii=False),
+        ],
+    ):
+        engine.run_chapter_generation(1)
+
+    counters = state.chapters[0].rewrite_counters
+    assert plan_call.call_count == 1
+    assert counters["writing_contract"] == 1
+    assert counters["writing"] == 1
+    assert counters["total"] == 2
     print("✓ PASSED")
 
 
@@ -570,6 +783,210 @@ def test_chapter_plan_is_persisted_and_consumed():
     writing_prompt = write_call.call_args.args[1]
     assert "调查员比对封条编号" in writing_prompt
     assert "确认内鬼接触过档案柜" in writing_prompt
+    print("✓ PASSED")
+
+
+def test_context_keeps_immediate_predecessor_ending():
+    """Structured chapters must still expose their exact ending downstream."""
+    print("  Testing immediate predecessor context...", end=" ")
+    from graph_novel.narrative import build_narrative_context
+
+    state = make_sample_state()
+    state.current_chapter = 2
+    previous = state.chapters[0]
+    previous.approval = ApprovalStatus.APPROVED
+    previous.polished_draft = (
+        "Aria crossed the eastern forest.\n\n"
+        "Kael lowered his sword and said the truce would last until dawn."
+    )
+    previous.narrative_delta = {
+        "chapter_summary": "Aria and Kael agreed to a temporary truce.",
+        "facts_established": [{
+            "fact_id": "fact.temporary_truce",
+            "statement": "Aria and Kael agreed to a truce until dawn",
+            "category": "relationship",
+            "visibility": "private",
+        }],
+        "knowledge_changes": [{
+            "fact_id": "fact.temporary_truce",
+            "character": "Aria",
+            "knowledge_level": "confirmed",
+            "source_type": "told",
+            "source_character": "Kael",
+            "evidence": "Kael stated the deadline directly",
+        }],
+        "continuity_changes": {
+            "time": "before dawn",
+            "character_locations": {
+                "Aria": "eastern forest",
+                "Kael": "eastern forest",
+            },
+            "character_conditions": {},
+            "resources": {},
+        },
+    }
+
+    context = json.loads(build_narrative_context(state))
+    immediate = context["immediate_predecessor"]
+    assert immediate["chapter_number"] == 1
+    assert immediate["ending_excerpt"].endswith(
+        "the truce would last until dawn."
+    )
+    print("✓ PASSED")
+
+
+def test_chapter_plan_requires_an_opening_bridge():
+    """Every non-opening chapter must anchor its first scene to the prior end."""
+    print("  Testing opening bridge contract...", end=" ")
+    from graph_novel.output_contracts import (
+        OutputContractError,
+        chapter_plan_contract,
+    )
+
+    plan = json.loads(mock_chapter_plan(chapter_number=2))
+    plan.pop("opening_bridge")
+    try:
+        chapter_plan_contract(2).validate(plan)
+        raise AssertionError("Expected a missing opening bridge to fail")
+    except OutputContractError as exc:
+        assert "opening_bridge" in str(exc)
+    print("✓ PASSED")
+
+
+def test_optional_source_character_null_is_normalized():
+    """Non-transfer knowledge sources may use JSON null for no source actor."""
+    print("  Testing nullable source character normalization...", end=" ")
+    from graph_novel.output_contracts import (
+        OutputContractError,
+        chapter_plan_contract,
+        parse_chapter_response,
+    )
+    from graph_novel.narrative import (
+        validate_chapter_plan,
+        validate_narrative_delta,
+    )
+
+    transfer = {
+        "fact_id": "fact.observed.coin",
+        "character": "Aria",
+        "knowledge_level": "confirmed",
+        "source_type": "observed",
+        "source_character": None,
+        "evidence": "Aria 亲眼看见硬币上的王室印记",
+    }
+    plan = json.loads(mock_chapter_plan())
+    plan["planned_facts"] = [{
+        "fact_id": transfer["fact_id"],
+        "statement": "硬币带有王室印记",
+        "category": "evidence",
+        "visibility": "private",
+    }]
+    plan["information_flow"] = [dict(transfer)]
+    state = make_sample_state()
+    validated_plan = chapter_plan_contract(
+        1,
+        state_validator=lambda item: validate_chapter_plan(state, item),
+    ).validate(plan)
+    assert validated_plan["information_flow"][0]["source_character"] == ""
+
+    meta = json.loads(mock_chapter_response().split("---META---", 1)[1])
+    meta["facts_established"] = plan["planned_facts"]
+    meta["knowledge_changes"] = [dict(transfer)]
+    response = (
+        MOCK_CHAPTER_DRAFT
+        + "\n\n---META---\n"
+        + json.dumps(meta, ensure_ascii=False)
+    )
+    _, validated_meta = parse_chapter_response(response)
+    assert validated_meta["knowledge_changes"][0]["source_character"] == ""
+    validate_narrative_delta(state, validated_plan, validated_meta)
+
+    told_plan = json.loads(mock_chapter_plan())
+    told_plan["planned_facts"] = plan["planned_facts"]
+    told_plan["information_flow"] = [{
+        **transfer,
+        "source_type": "told",
+    }]
+    normalized_told = chapter_plan_contract(1).validate(told_plan)
+    try:
+        validate_chapter_plan(make_sample_state(), normalized_told)
+        raise AssertionError("Expected told source without a character to fail")
+    except OutputContractError as exc:
+        assert "转述信息必须提供 source_character" in str(exc)
+    print("✓ PASSED")
+
+
+def test_continuity_context_reaches_all_chapter_nodes():
+    """Planning, writing and review receive the exact prior approved ending."""
+    print("  Testing continuity context propagation...", end=" ")
+    from graph_novel.nodes import (
+        chapter_planning,
+        consistency_review,
+        writing,
+    )
+
+    marker = "UNIQUE_APPROVED_ENDING: Kael still held the eastern gate lever."
+    state = make_sample_state()
+    state.current_chapter = 2
+    previous = state.chapters[0]
+    previous.approval = ApprovalStatus.APPROVED
+    previous.polished_draft = "Earlier approved prose.\n\n" + marker
+    previous.chapter_hook = "The gate had not opened yet."
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=mock_chapter_plan(chapter_number=2),
+    ) as plan_call:
+        chapter_planning.run_node(state)
+
+    with mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=mock_chapter_response(),
+    ) as write_call:
+        writing.run_node(state)
+
+    with mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=json.dumps(MOCK_CONSISTENCY_REPORT),
+    ) as review_call:
+        consistency_review.run_node(state)
+
+    assert marker in plan_call.call_args.args[1]
+    assert marker in write_call.call_args.args[1]
+    assert marker in review_call.call_args.args[1]
+    print("✓ PASSED")
+
+
+def test_narrative_context_is_bounded_for_long_projects():
+    """Large fact stores stay bounded while retaining recent facts."""
+    print("  Testing bounded long-project context...", end=" ")
+    from graph_novel.narrative import build_narrative_context
+
+    state = make_sample_state()
+    state.current_chapter = 251
+    for index in range(250):
+        fact_id = f"fact.long.{index:03d}"
+        state.narrative_facts.append(NarrativeFact(
+            id=fact_id,
+            statement=f"Aria long-running fact {index}",
+            category="continuity",
+            established_in_chapter=index + 1,
+        ))
+        state.character_knowledge.append(KnowledgeRecord(
+            fact_id=fact_id,
+            character="Aria",
+            knowledge_level="confirmed",
+            learned_in_chapter=index + 1,
+            source_type="observed",
+            evidence=f"Observed in chapter {index + 1}",
+        ))
+
+    context = json.loads(build_narrative_context(state, focus_text="Aria"))
+    assert len(context["facts"]) == 120
+    assert len(context["character_knowledge"]) <= 180
+    assert context["facts"][-1]["fact_id"] == "fact.long.249"
+    assert context["context_selection"]["facts_total"] == 250
+    assert context["context_selection"]["knowledge_total"] == 250
     print("✓ PASSED")
 
 
@@ -693,6 +1110,7 @@ def test_high_score_knowledge_leak_forces_rewrite():
         "overall_score": 8,
         "issues": [],
         "requires_rewrite": True,
+        "rewrite_scope": "writing",
         "logic_gate_passed": False,
         "narrative_violations": [{
             "severity": "严重",
@@ -723,15 +1141,74 @@ def test_high_score_knowledge_leak_forces_rewrite():
     ):
         engine.run_single_chapter(1)
 
-    assert plan_call.call_count == 2
+    assert plan_call.call_count == 1
     assert write_call.call_count == 2
     assert review_call.call_count == 2
-    assert "未进入现场的调查员" in plan_call.call_args_list[1].args[1]
+    assert "未进入现场的调查员" in write_call.call_args_list[1].args[1]
+    print("✓ PASSED")
+
+
+def test_unresolved_bridge_violation_stops_graph():
+    """Repeated bridge failures stop after bounded final-candidate reviews."""
+    print("  Testing chapter bridge rewrite limit...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+
+    state = make_sample_state()
+    engine = GraphNovelEngine(state)
+    blocked_review = dict(MOCK_CONSISTENCY_REPORT)
+    blocked_review.update({
+        "overall_score": 8,
+        "issues": [],
+        "requires_rewrite": True,
+        "rewrite_scope": "writing",
+        "logic_gate_passed": False,
+        "bridge_gate_passed": False,
+        "narrative_audit": {
+            "chapter_bridge": "上一章仍在城门，本章开场却已在森林深处。",
+            "causality": "本章内部因果成立。",
+            "knowledge_provenance": "信息来源成立。",
+            "continuity": "缺少城门到森林的移动过程。",
+        },
+        "narrative_violations": [{
+            "severity": "严重",
+            "category": "章节衔接",
+            "description": "开场跳过上一章未完成动作并直接换到新地点。",
+            "evidence": "前章结束在城门，本章首段已位于森林。",
+            "suggested_fix": "从城门动作继续，写出离开和抵达森林的过程。",
+        }],
+        "summary": "文字质量合格，但章节衔接不成立。",
+    })
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=mock_chapter_plan(),
+    ) as plan_call, mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=mock_chapter_response(),
+    ) as write_call, mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=json.dumps(blocked_review, ensure_ascii=False),
+    ) as review_call, mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=MOCK_CHAPTER_DRAFT,
+    ) as polish_call:
+        try:
+            engine.run_chapter_generation(1)
+            raise AssertionError("Expected bridge gate to stop the graph")
+        except GraphExecutionError as exc:
+            assert exc.node_key == "narrative_gate_1"
+
+    assert plan_call.call_count == 1
+    assert write_call.call_count == 3
+    assert review_call.call_count == 3
+    assert polish_call.call_count == 3
+    assert state.workflow_phase == "failed"
+    assert "开场跳过上一章" in state.chapters[0].rewrite_feedback
     print("✓ PASSED")
 
 
 def test_unresolved_narrative_violation_stops_graph():
-    """The graph stops instead of polishing unresolved serious logic defects."""
+    """The graph stops after bounded plan rewrites fail final review."""
     print("  Testing narrative rewrite limit...", end=" ")
     from graph_novel.engine import GraphExecutionError
 
@@ -742,6 +1219,7 @@ def test_unresolved_narrative_violation_stops_graph():
         "overall_score": 8,
         "issues": [],
         "requires_rewrite": True,
+        "rewrite_scope": "plan",
         "logic_gate_passed": False,
         "narrative_violations": [{
             "severity": "严重",
@@ -763,6 +1241,7 @@ def test_unresolved_narrative_violation_stops_graph():
         return_value=json.dumps(blocked_review, ensure_ascii=False),
     ) as review_call, mock.patch(
         "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=MOCK_CHAPTER_DRAFT,
     ) as polish_call:
         try:
             engine.run_chapter_generation(1)
@@ -773,7 +1252,7 @@ def test_unresolved_narrative_violation_stops_graph():
     assert plan_call.call_count == 3
     assert write_call.call_count == 3
     assert review_call.call_count == 3
-    polish_call.assert_not_called()
+    assert polish_call.call_count == 3
     assert state.workflow_phase == "failed"
     assert state.pending_gate is None
     assert len(state.chapters[0].revision_history) == 3
@@ -834,11 +1313,16 @@ def test_narrative_delta_commits_only_after_approval():
     assert state.narrative_facts == []
     assert state.character_knowledge == []
     assert state.chapters[0].narrative_delta["facts_established"]
+    assert state.chapters[0].narrative_delta["continuity_checkpoint"]
+    assert state.chapters[0].continuity_checkpoint == {}
 
     engine.apply_chapter_decision(1, True, "")
     assert state.narrative_facts[0].id == "fact.archive.code"
     assert state.character_knowledge[0].character == "Aria"
     assert state.character_knowledge[0].source_type == "observed"
+    checkpoint = state.chapters[0].continuity_checkpoint
+    assert checkpoint["source"] == "approved_meta"
+    assert checkpoint["ending_excerpt"] == MOCK_CHAPTER_DRAFT[-1600:]
     print("✓ PASSED")
 
 
@@ -877,7 +1361,11 @@ def test_global_review_guards_and_failure():
     """Global review requires approved chapters and exposes node failure."""
     print("  Testing global review guards + failure...", end=" ")
     from graph_novel.engine import GraphExecutionError
-    from graph_novel.web.app import app as flask_app, _engines, _states
+    from graph_novel.web.app import (
+        app as flask_app,
+        _engines,
+        _states,
+    )
 
     state = make_sample_state()
     engine = GraphNovelEngine(state)
@@ -1154,8 +1642,11 @@ def test_output_contract_parsing_and_retry():
         "ai_disease_count": 0,
         "dialogue_ratio_estimate": "60%",
         "requires_rewrite": False,
+        "rewrite_scope": "none",
         "logic_gate_passed": True,
+        "bridge_gate_passed": True,
         "narrative_audit": {
+            "chapter_bridge": "已核对。",
             "causality": "已核对。",
             "knowledge_provenance": "已核对。",
             "continuity": "已核对。",
@@ -1402,22 +1893,16 @@ def test_execution_trace_and_unified_export():
     assert [event["node"] for event in node_finished] == [
         "chapter_planning_1",
         "writing_1",
-        "consistency_review_1",
         "style_polish_1",
+        "consistency_review_1",
     ]
     assert all(event["status"] == "completed" for event in node_finished)
     assert all(event["duration_ms"] >= 0 for event in node_finished)
     assert any(
         event["event"] == "route_selected"
         and event["source"] == "consistency_review_1"
-        and event["target"] == "style_polish_1"
-        and event["reason"] == "review_passed"
-        for event in state.execution_events
-    )
-    assert any(
-        event["event"] == "route_selected"
         and event["target"] == "human_approval_1"
-        and event["reason"] == "chapter_gate"
+        and event["reason"] == "final_review_passed"
         for event in state.execution_events
     )
 
@@ -1435,7 +1920,7 @@ def test_execution_trace_and_unified_export():
     assert export_filename(state) == "trace_export_完整版.md"
 
     reloaded = GraphNovelState.from_json(state.save())
-    assert reloaded.version == 6
+    assert reloaded.version == 8
     assert reloaded.execution_events == state.execution_events
     print("✓ PASSED")
 
@@ -1443,7 +1928,12 @@ def test_execution_trace_and_unified_export():
 def test_web_observability_and_export_contract():
     """Web surfaces graph labels, recent events, and the canonical export."""
     print("  Testing Web observability + export contract...", end=" ")
-    from graph_novel.web.app import app as flask_app, _engines, _states
+    from graph_novel.web.app import (
+        app as flask_app,
+        _engines,
+        _node_label,
+        _states,
+    )
 
     project_id = "web_observability"
     state = make_sample_state()
@@ -1498,6 +1988,14 @@ def test_web_observability_and_export_contract():
         assert "查看章节大纲" in foundation_page
         assert "Key Locations" not in foundation_page
         assert "View Chapter Outlines" not in foundation_page
+
+        chapters_page = client.get(
+            f"/project/{project_id}/chapters"
+        ).get_data(as_text=True)
+        assert "轻改文字" in chapters_page
+        assert "重写正文" in chapters_page
+        assert "重做规划" in chapters_page
+        assert _node_label("quality_gate_2") == "第2章·成稿质量门"
 
         response = client.get(f"/download/{project_id}/novel")
         markdown = response.get_data(as_text=True)
@@ -1555,8 +2053,11 @@ def test_node_contract_failures_are_observable():
         "ai_disease_count": 0,
         "dialogue_ratio_estimate": "0%",
         "requires_rewrite": True,
+        "rewrite_scope": "polish",
         "logic_gate_passed": True,
+        "bridge_gate_passed": True,
         "narrative_audit": {
+            "chapter_bridge": "已核对。",
             "causality": "已核对。",
             "knowledge_provenance": "已核对。",
             "continuity": "已核对。",
@@ -1826,7 +2327,7 @@ def test_project_inputs_and_legacy_state_migration():
     legacy_path.write_text(json.dumps(legacy_data, ensure_ascii=False), encoding="utf-8")
 
     loaded = GraphNovelState.from_json(legacy_path)
-    assert loaded.version == 6
+    assert loaded.version == 8
     assert loaded.target_total_chapters == loaded.total_chapters
     assert loaded.foundation_approval == ApprovalStatus.APPROVED
     assert loaded.workflow_phase == "chapter_loop"
@@ -1843,7 +2344,7 @@ def test_project_inputs_and_legacy_state_migration():
     )
 
     migrated = GraphNovelState.from_json(version_two_path)
-    assert migrated.version == 6
+    assert migrated.version == 8
     assert migrated.chapters[0].side_effects_committed
     assert migrated.pending_gate == "chapter:2"
     assert migrated.chapters[0].narrative_delta["chapter_summary"]
@@ -1851,6 +2352,9 @@ def test_project_inputs_and_legacy_state_migration():
     version_five = make_sample_state()
     version_five.version = 5
     version_five.chapters[0].approval = ApprovalStatus.APPROVED
+    version_five.chapters[0].polished_draft = (
+        "Legacy approved chapter.\n\nUNIQUE LEGACY ENDING"
+    )
     version_five_data = version_five.to_dict()
     for key in (
         "narrative_facts",
@@ -1867,11 +2371,16 @@ def test_project_inputs_and_legacy_state_migration():
         encoding="utf-8",
     )
     migrated_five = GraphNovelState.from_json(version_five_path)
-    assert migrated_five.version == 6
+    assert migrated_five.version == 8
     assert migrated_five.chapters[0].plan == {}
     assert (
         migrated_five.chapters[0].narrative_delta["chapter_summary"]
         == migrated_five.chapters[0].title
+    )
+    legacy_checkpoint = migrated_five.chapters[0].continuity_checkpoint
+    assert legacy_checkpoint["source"] == "legacy_backfill"
+    assert legacy_checkpoint["ending_excerpt"].endswith(
+        "UNIQUE LEGACY ENDING"
     )
     print("✓ PASSED")
 
@@ -2001,6 +2510,28 @@ def _chapter_pipeline_mocks():
             "character_conditions": {"Aria": "健康"},
             "resources": {"Aria": ["密封卷轴"]},
         },
+        "continuity_checkpoint": {
+            "last_scene": {
+                "time": "中午",
+                "location": "王城东部森林",
+                "pov_character": "Aria",
+                "characters_present": ["Aria"],
+                "final_action": "Aria 找到带有王室印记的硬币",
+                "final_dialogue": "",
+            },
+            "active_goals": [{
+                "character": "Aria",
+                "goal": "查明刺客的幕后主使",
+                "next_action": "检查王室硬币的来源",
+            }],
+            "unresolved_actions": ["确认王室硬币为何在刺客身上"],
+            "open_threads": [{
+                "thread_id": "thread.black_wax_conspiracy",
+                "description": "黑蜡密令与王室刺客之间的联系",
+                "urgency": "high",
+            }],
+            "relationship_changes": {},
+        },
     })
     review = dict(MOCK_CONSISTENCY_REPORT)
     review["character_arc_updates"] = {"Aria": "rising_action"}
@@ -2063,6 +2594,103 @@ def test_chapter_gate_feedback_and_side_effect_commit():
     except GraphExecutionError:
         pass
 
+    print("✓ PASSED")
+
+
+def test_human_rejection_scope_routes_to_selected_node():
+    """Human rejection can request polish, prose rewrite or replanning."""
+    print("  Testing human revision scope edges...", end=" ")
+
+    state = make_sample_state()
+    state.foundation_approval = ApprovalStatus.APPROVED
+    engine = GraphNovelEngine(state)
+    plan, write, review, polish = _chapter_pipeline_mocks()
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=plan,
+    ) as plan_call, mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=write,
+    ) as write_call, mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=polish,
+    ) as polish_call, mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=review,
+    ):
+        engine.run_chapter_generation(1)
+        engine.apply_chapter_decision(
+            1,
+            False,
+            "只调整文字节奏",
+            revision_scope="polish",
+        )
+        engine.run_chapter_generation(1)
+        assert (plan_call.call_count, write_call.call_count) == (1, 1)
+        assert polish_call.call_count == 2
+
+        engine.apply_chapter_decision(
+            1,
+            False,
+            "重写本章动作",
+            revision_scope="writing",
+        )
+        engine.run_chapter_generation(1)
+        assert (plan_call.call_count, write_call.call_count) == (1, 2)
+        assert polish_call.call_count == 3
+
+        engine.apply_chapter_decision(
+            1,
+            False,
+            "调整本章因果计划",
+            revision_scope="plan",
+        )
+        engine.run_chapter_generation(1)
+        assert (plan_call.call_count, write_call.call_count) == (2, 3)
+        assert polish_call.call_count == 4
+
+    assert state.chapters[0].human_revision_scope == "plan"
+    print("✓ PASSED")
+
+
+def test_approval_requires_a_clean_final_review():
+    """A stale or failed final review cannot commit chapter side effects."""
+    print("  Testing final review approval guard...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+
+    state = make_sample_state()
+    state.foundation_approval = ApprovalStatus.APPROVED
+    engine = GraphNovelEngine(state)
+    plan, write, review, polish = _chapter_pipeline_mocks()
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=plan,
+    ), mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=write,
+    ), mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value=polish,
+    ), mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=review,
+    ):
+        engine.run_chapter_generation(1)
+
+    chapter = state.chapters[0]
+    chapter.consistency_report["requires_rewrite"] = True
+    chapter.consistency_report["rewrite_scope"] = "writing"
+    try:
+        engine.apply_chapter_decision(1, True, "")
+        raise AssertionError("Expected failed final review to block approval")
+    except GraphExecutionError as exc:
+        assert exc.code == "invalid_transition"
+
+    assert chapter.approval == ApprovalStatus.PENDING
+    assert not chapter.side_effects_committed
+    assert state.pending_gate == "chapter:1"
     print("✓ PASSED")
 
 
@@ -2137,11 +2765,26 @@ def test_chapter_web_api_contract():
 
         response = client.post(
             f"/api/{project_id}/approve-chapter/1",
-            json={"approved": False, "feedback": "增强章末反转"},
+            json={
+                "approved": False,
+                "feedback": "增强章末反转",
+                "revision_scope": "invalid",
+            },
+        )
+        assert response.status_code == 400
+
+        response = client.post(
+            f"/api/{project_id}/approve-chapter/1",
+            json={
+                "approved": False,
+                "feedback": "增强章末反转",
+                "revision_scope": "polish",
+            },
         )
         payload = response.get_json()
         assert response.status_code == 200
-        assert payload["next_action"] == "rewrite_chapter"
+        assert payload["next_action"] == "polish_chapter"
+        assert state.chapters[0].human_revision_scope == "polish"
 
         response = client.post(f"/api/{project_id}/run-chapter/1")
         assert response.status_code == 202
@@ -2407,6 +3050,322 @@ def test_web_task_lock_and_restart_recovery():
     print("✓ PASSED")
 
 
+def test_chapter_generation_requires_approved_predecessor():
+    """The chapter graph and Web UI must prevent out-of-order generation."""
+    print("  Testing sequential chapter gate...", end=" ")
+    from graph_novel.engine import GraphExecutionError
+    from graph_novel.web.app import app as flask_app, _engines, _states
+
+    project_id = "sequential_chapter_gate"
+    state = make_sample_state()
+    state.project_id = project_id
+    state.save_dir = TEST_PROJECTS_DIR / project_id
+    state.foundation_approval = ApprovalStatus.APPROVED
+    state.workflow_phase = "chapter_loop"
+    state.save()
+    engine = GraphNovelEngine(state)
+    _states[project_id] = state
+    _engines[project_id] = engine
+
+    try:
+        engine.validate_chapter_generation(2)
+        raise AssertionError("Expected chapter 2 to require chapter 1 approval")
+    except GraphExecutionError as exc:
+        assert exc.code == "invalid_transition"
+        assert exc.node_key == "human_approval_1"
+
+    with flask_app.test_client() as client:
+        response = client.post(f"/api/{project_id}/run-chapter/2")
+        assert response.status_code == 409
+        assert response.get_json()["status"] == "invalid_transition"
+
+        page = client.get(f"/project/{project_id}/chapters")
+        html = page.get_data(as_text=True)
+        assert 'onclick="runChapter(1)' in html
+        assert 'onclick="runChapter(2)' not in html
+        assert "需先完成第1章" in html
+
+    state.chapters[0].approval = ApprovalStatus.APPROVED
+    engine.validate_chapter_generation(2)
+    print("✓ PASSED")
+
+
+def test_chapter_generation_resumes_from_persisted_node_outputs():
+    """Restart recovery reuses completed chapter nodes and rewrite budgets."""
+    print("  Testing persisted chapter checkpoint resume...", end=" ")
+
+    scenarios = {
+        "writing": (0, 1, 1, 1),
+        "polish": (0, 0, 1, 1),
+        "review": (0, 0, 0, 1),
+    }
+    expected_counters = {
+        "writing_contract": 1,
+        "plan": 1,
+        "writing": 1,
+        "polish": 0,
+        "total": 3,
+    }
+
+    for interrupted_node, expected_calls in scenarios.items():
+        state = make_sample_state()
+        state.foundation_approval = ApprovalStatus.APPROVED
+        state.workflow_phase = "failed"
+        chapter = state.chapters[0]
+        chapter.plan = json.loads(mock_chapter_plan())
+        chapter.rewrite_counters = dict(expected_counters)
+        state.node_status["chapter_planning_1"] = NodeStatus.COMPLETED
+
+        if interrupted_node in {"polish", "review"}:
+            chapter.draft = MOCK_CHAPTER_DRAFT
+            chapter.word_count = len(MOCK_CHAPTER_DRAFT.replace(" ", ""))
+            state.node_status["writing_1"] = NodeStatus.COMPLETED
+        if interrupted_node == "review":
+            chapter.polished_draft = "PERSISTED POLISHED CANDIDATE"
+            state.node_status["style_polish_1"] = NodeStatus.COMPLETED
+
+        node_keys = {
+            "writing": "writing_1",
+            "polish": "style_polish_1",
+            "review": "consistency_review_1",
+        }
+        state.node_status[node_keys[interrupted_node]] = NodeStatus.IN_PROGRESS
+        state.last_error = {
+            "node": node_keys[interrupted_node],
+            "message": "service interrupted",
+        }
+        engine = GraphNovelEngine(state)
+
+        with mock.patch(
+            "graph_novel.nodes.chapter_planning.call_llm_sync",
+            return_value=mock_chapter_plan(),
+        ) as plan_call, mock.patch(
+            "graph_novel.nodes.writing.call_llm_sync",
+            return_value=mock_chapter_response(),
+        ) as write_call, mock.patch(
+            "graph_novel.nodes.style_polish.call_llm_sync",
+            return_value="RESUMED POLISHED CANDIDATE",
+        ) as polish_call, mock.patch(
+            "graph_novel.nodes.consistency_review.call_llm_sync",
+            return_value=json.dumps(MOCK_CONSISTENCY_REPORT),
+        ) as review_call:
+            engine.run_chapter_generation(1)
+
+        actual_calls = (
+            plan_call.call_count,
+            write_call.call_count,
+            polish_call.call_count,
+            review_call.call_count,
+        )
+        assert actual_calls == expected_calls, (
+            interrupted_node,
+            actual_calls,
+        )
+        assert chapter.rewrite_counters == expected_counters
+        assert state.pending_gate == "chapter:1"
+
+    print("✓ PASSED")
+
+
+def test_logic_gate_rejects_polish_only_rewrite():
+    """A hard narrative gate cannot route to a wording-only revision."""
+    print("  Testing hard-gate rewrite scope contract...", end=" ")
+    from graph_novel.output_contracts import (
+        CONSISTENCY_REVIEW_CONTRACT,
+        OutputContractError,
+    )
+
+    invalid = json.loads(json.dumps(MOCK_CONSISTENCY_REPORT))
+    invalid.update({
+        "requires_rewrite": True,
+        "rewrite_scope": "polish",
+        "logic_gate_passed": False,
+        "bridge_gate_passed": True,
+        "summary": "Narrative logic failed but the model requested polish.",
+    })
+    try:
+        CONSISTENCY_REVIEW_CONTRACT.validate(invalid)
+        raise AssertionError("Expected hard logic gate to reject polish scope")
+    except OutputContractError as exc:
+        assert "rewrite_scope" in str(exc)
+
+    print("✓ PASSED")
+
+
+def test_polish_revision_uses_current_polished_candidate():
+    """A wording-only revision starts from the latest polished candidate."""
+    print("  Testing polish revision source...", end=" ")
+
+    state = make_sample_state()
+    state.foundation_approval = ApprovalStatus.APPROVED
+    chapter = state.chapters[0]
+    chapter.plan = json.loads(mock_chapter_plan())
+    chapter.draft = "ORIGINAL DRAFT SHOULD NOT BE THE POLISH SOURCE"
+    chapter.polished_draft = "CURRENT POLISHED CANDIDATE"
+    chapter.consistency_report = dict(MOCK_CONSISTENCY_REPORT)
+    chapter.approval = ApprovalStatus.REJECTED
+    chapter.human_feedback = "只调整句子节奏"
+    chapter.human_revision_scope = "polish"
+    state.node_status.update({
+        "chapter_planning_1": NodeStatus.COMPLETED,
+        "writing_1": NodeStatus.COMPLETED,
+        "style_polish_1": NodeStatus.COMPLETED,
+        "consistency_review_1": NodeStatus.COMPLETED,
+    })
+    engine = GraphNovelEngine(state)
+
+    with mock.patch(
+        "graph_novel.nodes.chapter_planning.call_llm_sync",
+        return_value=mock_chapter_plan(),
+    ) as plan_call, mock.patch(
+        "graph_novel.nodes.writing.call_llm_sync",
+        return_value=mock_chapter_response(),
+    ) as write_call, mock.patch(
+        "graph_novel.nodes.style_polish.call_llm_sync",
+        return_value="REVISED POLISHED CANDIDATE",
+    ) as polish_call, mock.patch(
+        "graph_novel.nodes.consistency_review.call_llm_sync",
+        return_value=json.dumps(MOCK_CONSISTENCY_REPORT),
+    ):
+        engine.run_chapter_generation(1)
+
+    plan_call.assert_not_called()
+    write_call.assert_not_called()
+    assert polish_call.call_count == 1
+    polish_prompt = polish_call.call_args.args[1]
+    assert "CURRENT POLISHED CANDIDATE" in polish_prompt
+    assert "ORIGINAL DRAFT SHOULD NOT BE THE POLISH SOURCE" not in polish_prompt
+    assert chapter.polished_draft == "REVISED POLISHED CANDIDATE"
+    print("✓ PASSED")
+
+
+def test_project_creation_rejects_empty_and_duplicate_slug():
+    """Invalid or colliding project IDs never overwrite project state."""
+    print("  Testing project ID collision guard...", end=" ")
+    from graph_novel.web.app import app as flask_app, _states
+
+    project_id = "project_collision_guard"
+    payload = {
+        "title": "Project Collision Guard",
+        "genre": "悬疑",
+        "premise": "Original premise",
+        "theme": "Truth",
+        "target_chapters": "5",
+        "target_words": "50000",
+        "notes": "Original notes",
+    }
+
+    with flask_app.test_client() as client:
+        first = client.post("/create", data=payload)
+        assert first.status_code == 302
+        state_path = (
+            TEST_PROJECTS_DIR / project_id / f"{project_id}_state.json"
+        )
+        original_state = state_path.read_bytes()
+
+        duplicate = client.post("/create", data={
+            **payload,
+            "premise": "This must not overwrite the original",
+        })
+        assert duplicate.status_code == 200
+        assert "已存在" in duplicate.get_data(as_text=True)
+        assert state_path.read_bytes() == original_state
+        assert _states[project_id].creative_premise == "Original premise"
+
+        empty_slug = client.post("/create", data={
+            **payload,
+            "title": "!!!",
+        })
+        assert empty_slug.status_code == 200
+        assert "有效的项目名称" in empty_slug.get_data(as_text=True)
+        assert not (TEST_PROJECTS_DIR / "graph_novel_state.json").exists()
+
+    print("✓ PASSED")
+
+
+def test_chapter_page_paginates_and_uses_server_next_chapter():
+    """Long projects render one page and never infer graph order from the DOM."""
+    print("  Testing chapter pagination + server next edge...", end=" ")
+    from graph_novel.web.app import app as flask_app, _states
+
+    project_id = "chapter_pagination"
+    state = make_sample_state()
+    state.project_id = project_id
+    state.save_dir = TEST_PROJECTS_DIR / project_id
+    state.foundation_approval = ApprovalStatus.APPROVED
+    state.total_chapters = 200
+    state.target_total_chapters = 200
+    state.chapters = [
+        Chapter(chapter_number=number, title=f"Chapter {number}")
+        for number in range(1, 201)
+    ]
+    for chapter in state.chapters[:23]:
+        chapter.approval = ApprovalStatus.APPROVED
+    _states[project_id] = state
+
+    with flask_app.test_client() as client:
+        first_page = client.get(
+            f"/project/{project_id}/chapters"
+        ).get_data(as_text=True)
+        assert 'id="chapter-card-1"' in first_page
+        assert 'id="chapter-card-24"' in first_page
+        assert 'id="chapter-card-25"' not in first_page
+        assert "const nextWritableChapter = 24;" in first_page
+        assert "querySelector('.badge')" not in first_page
+
+        second_page = client.get(
+            f"/project/{project_id}/chapters?page=2"
+        ).get_data(as_text=True)
+        assert 'id="chapter-card-25"' in second_page
+        assert 'id="chapter-card-48"' in second_page
+        assert 'id="chapter-card-49"' not in second_page
+        assert 'onclick="runChapter(25)' not in second_page
+        assert "需先完成第24章" in second_page
+
+        final_page = client.get(
+            f"/project/{project_id}/chapters?page=9"
+        ).get_data(as_text=True)
+        assert 'id="chapter-card-193"' in final_page
+        assert 'id="chapter-card-200"' in final_page
+
+    print("✓ PASSED")
+
+
+def test_web_output_is_safe_and_server_defaults_are_local():
+    """Untrusted chapter/error text is escaped and local serving is opt-in."""
+    print("  Testing Web output safety + server defaults...", end=" ")
+    from graph_novel.web.app import app as flask_app, _states
+    from web_server import get_server_options
+
+    with mock.patch.dict(
+        os.environ,
+        {"FLASK_HOST": "", "FLASK_DEBUG": "", "PORT": ""},
+        clear=False,
+    ):
+        host, port, debug = get_server_options()
+    assert host == "127.0.0.1"
+    assert port == 5500
+    assert debug is False
+
+    project_id = "safe_chapter_rendering"
+    state = make_sample_state()
+    state.project_id = project_id
+    state.foundation_approval = ApprovalStatus.APPROVED
+    state.chapters[0].draft = '<img src=x onerror="window.injected=1">'
+    _states[project_id] = state
+
+    with flask_app.test_client() as client:
+        html = client.get(
+            f"/project/{project_id}/chapters"
+        ).get_data(as_text=True)
+
+    assert "renderProse" in html
+    assert "paragraph.textContent" in html
+    assert "modal-content').innerHTML" not in html
+    assert "escapeHtml(data.error" in html
+    print("✓ PASSED")
+
+
 # ======================================================================
 # Main
 # ======================================================================
@@ -2427,10 +3386,19 @@ def run_all_tests():
         test_node_contract_failures_are_observable,
         test_chapter_pipeline_with_mocks,
         test_consistency_rewrite_loop,
+        test_consistency_reviews_final_polished_candidate,
+        test_review_scope_selects_the_smallest_rewrite_edge,
+        test_rewrite_budgets_are_independent_and_persisted,
         test_chapter_plan_is_persisted_and_consumed,
+        test_context_keeps_immediate_predecessor_ending,
+        test_chapter_plan_requires_an_opening_bridge,
+        test_optional_source_character_null_is_normalized,
+        test_continuity_context_reaches_all_chapter_nodes,
+        test_narrative_context_is_bounded_for_long_projects,
         test_information_transfer_requires_a_valid_source,
         test_unplanned_writing_fact_retries_without_replanning,
         test_high_score_knowledge_leak_forces_rewrite,
+        test_unresolved_bridge_violation_stops_graph,
         test_unresolved_narrative_violation_stops_graph,
         test_narrative_delta_commits_only_after_approval,
         test_global_review,
@@ -2445,10 +3413,19 @@ def run_all_tests():
         test_failed_foundation_page_exposes_retry,
         test_foundation_web_api_contract,
         test_chapter_gate_feedback_and_side_effect_commit,
+        test_human_rejection_scope_routes_to_selected_node,
+        test_approval_requires_a_clean_final_review,
         test_chapter_failure_stops_before_gate,
         test_chapter_web_api_contract,
         test_complete_mock_web_workflow,
         test_web_task_lock_and_restart_recovery,
+        test_chapter_generation_requires_approved_predecessor,
+        test_chapter_generation_resumes_from_persisted_node_outputs,
+        test_logic_gate_rejects_polish_only_rewrite,
+        test_polish_revision_uses_current_polished_candidate,
+        test_project_creation_rejects_empty_and_duplicate_slug,
+        test_chapter_page_paginates_and_uses_server_next_chapter,
+        test_web_output_is_safe_and_server_defaults_are_local,
     ]
 
     passed = 0

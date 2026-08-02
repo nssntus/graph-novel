@@ -50,6 +50,13 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的"毒舌主编"，拥有15年
    - 时间、位置、伤势、资源和能力变化是否与已批准状态一致？
    - 有没有注水段落？
 
+7. 章节衔接门（独立硬门槛）：
+   - 对照 immediate_predecessor.ending_excerpt 与本章前300字，是否从同一时间、地点、在场角色、动作和未完成事项连续展开？
+   - chapter_plan.opening_bridge 的 inherited_endpoint、transition_steps 和 first_scene_start 是否都在正文中实际发生？
+   - 若发生跳时、换地点、角色离场/到场，正文是否写出了等待、移动、交接或到场过程？
+   - 是否凭空出现新角色、新物品、新能力，或用“早已知道/提前准备”掩盖缺失铺垫？
+   - 第一章没有前章，只需检查 opening_bridge 是否从故事起点成立。
+
 输出 JSON：
 {
   "overall_score": 1-10,
@@ -68,8 +75,11 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的"毒舌主编"，拥有15年
   "ai_disease_count": AI病检测到的数量,
   "dialogue_ratio_estimate": "估计对话占比",
   "requires_rewrite": true/false,
+  "rewrite_scope": "none" | "plan" | "writing" | "polish",
   "logic_gate_passed": true/false,
+  "bridge_gate_passed": true/false,
   "narrative_audit": {
+    "chapter_bridge": "逐项核对前章精确结尾、opening_bridge 与本章前300字",
     "causality": "逐项核对本章关键事件是否满足 causal_chain",
     "knowledge_provenance": "逐个核对角色新增认知是否有可靠来源",
     "continuity": "核对时间、位置、伤势、资源和能力变化"
@@ -77,7 +87,7 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的"毒舌主编"，拥有15年
   "narrative_violations": [
     {
       "severity": "致命" | "严重" | "轻微",
-      "category": "因果断裂" | "信息越权" | "时间" | "位置" | "资源" | "伤势" | "能力" | "其他",
+      "category": "章节衔接" | "因果断裂" | "信息越权" | "时间" | "位置" | "资源" | "伤势" | "能力" | "其他",
       "description": "违反了什么叙事事实",
       "evidence": "正文证据及缺失的前置条件",
       "suggested_fix": "补铺垫、降级认知或调整事件的具体方法"
@@ -88,8 +98,17 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的"毒舌主编"，拥有15年
 }
 
 如果评分低于6分，requires_rewrite 应为 true。
+rewrite_scope 必须选择最小可修复范围：
+- plan：章节规划本身缺少前因、过渡或信息来源，必须重新规划
+- writing：规划正确，但正文遗漏、越界或没有执行规划
+- polish：事件和状态都正确，仅文风、段落、AI病或表达需要调整
+- none：最终候选稿可以进入人工审批
 存在任何“致命/严重”的 narrative_violations 时，
 logic_gate_passed 必须为 false，requires_rewrite 必须为 true。
+章节衔接不成立时，bridge_gate_passed 和 logic_gate_passed 都必须为 false，
+requires_rewrite 必须为 true，并在 narrative_violations 中给出“章节衔接”问题。
+只要 logic_gate_passed 或 bridge_gate_passed 为 false，rewrite_scope 不得为 polish，
+至少必须回到 writing；若规划本身缺失前因则选择 plan。
 请只输出 JSON。"""
 
 
@@ -99,7 +118,8 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     state.node_status[f"consistency_review_{ch_num}"] = NodeStatus.IN_PROGRESS
 
     chapter = state.chapters[ch_num - 1]
-    if not chapter.draft:
+    candidate_text = chapter.polished_draft or chapter.draft
+    if not candidate_text:
         state.node_status[f"consistency_review_{ch_num}"] = NodeStatus.SKIPPED
         return state
 
@@ -107,18 +127,22 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     character_text = _character_context(state)
     prev_text = _prev_summary(state)
     fs_text = _foreshadowing_status(state)
-    narrative_context = build_narrative_context(state)
     plan_text = json.dumps(chapter.plan, ensure_ascii=False, indent=2)
+    narrative_context = build_narrative_context(
+        state,
+        chapter_number=ch_num,
+        focus_text=plan_text,
+    )
     delta_text = json.dumps(
         chapter.narrative_delta,
         ensure_ascii=False,
         indent=2,
     )
 
-    user_prompt = f"""审查第{ch_num}章。
+    user_prompt = f"""审查第{ch_num}章的最终候选稿。
 
 == 第{ch_num}章：{chapter.title}（{chapter.word_count}字）==
-{chapter.draft[:10000]}
+{candidate_text[:12000]}
 
 == 上下文 ==
 世界：{world_text}
@@ -126,8 +150,11 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 前文：{prev_text}
 伏笔：{fs_text}
 
-== 已批准的叙事事实、角色认知与连续性状态 ==
+== 分层章节上下文 ==
 {narrative_context}
+
+先逐字对照 immediate_predecessor.ending_excerpt、chapter_plan.opening_bridge
+和本章前300字，独立给出 bridge_gate_passed；不要用总体评分代替衔接判断。
 
 == 本章因果计划 ==
 {plan_text}
@@ -135,7 +162,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 == 本章候选状态变化 ==
 {delta_text}
 
-请从毒舌主编视角严格审查，输出 JSON 报告。"""
+请从毒舌主编视角严格审查最终候选稿，并选择最小 rewrite_scope，输出 JSON 报告。"""
 
     try:
         report = call_json_with_contract_sync(

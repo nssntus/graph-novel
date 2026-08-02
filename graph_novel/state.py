@@ -12,7 +12,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-CURRENT_STATE_VERSION = 6
+CURRENT_STATE_VERSION = 8
+_ENDING_EXCERPT_CHARS = 1600
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -144,7 +145,10 @@ class Chapter:
     shuangdian_type: str = ""  # "" | "小爽点" | "大爽点" | "铺垫"
     generation_meta: Dict[str, Any] = field(default_factory=dict)
     narrative_delta: Dict[str, Any] = field(default_factory=dict)
+    continuity_checkpoint: Dict[str, Any] = field(default_factory=dict)
     rewrite_feedback: str = ""
+    rewrite_counters: Dict[str, int] = field(default_factory=dict)
+    human_revision_scope: str = "plan"
     revision_count: int = 0
     revision_history: List[Dict[str, Any]] = field(default_factory=list)
     side_effects_committed: bool = False
@@ -424,5 +428,81 @@ def _migrate_state(state: GraphNovelState, source: Path) -> GraphNovelState:
                     },
                 }
 
+    if state.version < 7:
+        for chapter in state.chapters:
+            if (
+                chapter.approval == ApprovalStatus.APPROVED
+                and not chapter.continuity_checkpoint
+            ):
+                chapter.continuity_checkpoint = (
+                    _build_legacy_continuity_checkpoint(chapter)
+                )
+
     state.version = CURRENT_STATE_VERSION
     return state
+
+
+def _build_legacy_continuity_checkpoint(chapter: Chapter) -> Dict[str, Any]:
+    """Backfill an approved chapter without calling an LLM."""
+    delta = chapter.narrative_delta or {}
+    continuity = delta.get("continuity_changes", {}) or {}
+    plan_continuity = chapter.plan.get("continuity_notes", {}) or {}
+    summary = delta.get("chapter_summary", "")
+    if not summary and chapter.outline:
+        summary = chapter.outline.summary
+    summary = summary or chapter.chapter_hook or chapter.title
+    chapter_text = chapter.polished_draft or chapter.draft
+    character_locations = (
+        continuity.get("character_locations")
+        or plan_continuity.get("character_locations")
+        or {}
+    )
+    location_values = list(dict.fromkeys(
+        str(location)
+        for location in character_locations.values()
+        if str(location).strip()
+    ))
+    open_threads = []
+    if chapter.chapter_hook:
+        open_threads.append({
+            "thread_id": f"legacy_hook_ch{chapter.chapter_number}",
+            "description": chapter.chapter_hook,
+            "urgency": "unverified",
+        })
+
+    return {
+        "chapter_number": chapter.chapter_number,
+        "summary": summary,
+        "hook": chapter.chapter_hook,
+        "ending_excerpt": chapter_text[-_ENDING_EXCERPT_CHARS:],
+        "last_scene": {
+            "time": (
+                continuity.get("time")
+                or plan_continuity.get("time")
+                or ""
+            ),
+            "location": " / ".join(location_values),
+            "pov_character": (
+                chapter.outline.pov_character
+                if chapter.outline and chapter.outline.pov_character
+                else ""
+            ),
+            "characters_present": list(character_locations),
+            "final_action": chapter.chapter_hook or summary,
+            "final_dialogue": "",
+        },
+        "active_goals": [],
+        "unresolved_actions": [],
+        "open_threads": open_threads,
+        "relationship_changes": {},
+        "continuity": {
+            "time": continuity.get("time", ""),
+            "character_locations": character_locations,
+            "character_conditions": continuity.get(
+                "character_conditions",
+                {},
+            ),
+            "resources": continuity.get("resources", {}),
+        },
+        "source": "legacy_backfill",
+    }

@@ -58,6 +58,7 @@ ARC_STAGE_LABELS = {
     "climax": "高潮",
     "resolution": "收束",
 }
+CHAPTERS_PER_PAGE = 24
 
 # ======================================================================
 # Routes
@@ -102,6 +103,13 @@ def create_project():
 
         # Create state
         project_id = _slugify(title)
+        if not project_id:
+            flash("请输入至少包含一个字母、数字或汉字的有效的项目名称。", "error")
+            return render_template("create.html")
+        if _project_id_exists(project_id):
+            flash("同名项目已存在，请修改书名后再创建。", "error")
+            return render_template("create.html")
+
         state = GraphNovelState(
             project_id=project_id,
             novel_title=title,
@@ -241,11 +249,31 @@ def chapters_list(project_id: str):
         flash("项目不存在。", "error")
         return redirect(url_for("index"))
 
+    try:
+        requested_page = int(request.args.get("page", "1"))
+    except (TypeError, ValueError):
+        requested_page = 1
+    total_pages = max(
+        1,
+        (state.total_chapters + CHAPTERS_PER_PAGE - 1)
+        // CHAPTERS_PER_PAGE,
+    )
+    current_page = min(max(requested_page, 1), total_pages)
+    first_chapter = (current_page - 1) * CHAPTERS_PER_PAGE + 1
+    last_chapter = min(
+        first_chapter + CHAPTERS_PER_PAGE - 1,
+        state.total_chapters,
+    )
+
     return render_template(
         "chapters.html",
         project_id=project_id,
         state=state,
         approved_count=len(approved_chapters(state)),
+        chapter_numbers=range(first_chapter, last_chapter + 1),
+        current_page=current_page,
+        total_pages=total_pages,
+        next_writable_chapter=_next_writable_chapter(state),
     )
 
 
@@ -288,15 +316,25 @@ def api_approve_chapter(project_id: str, ch_num: int):
 
     approved = data["approved"]
     feedback = str(data.get("feedback", "")).strip()
+    revision_scope = str(data.get("revision_scope", "plan")).strip()
     if not approved and not feedback:
         return jsonify({"error": "驳回章节时请填写修改意见。"}), 400
+    if not approved and revision_scope not in {"polish", "writing", "plan"}:
+        return jsonify({
+            "error": "revision_scope 必须是 polish、writing 或 plan。",
+        }), 400
 
     project_lock = _get_project_lock(project_id)
     if not project_lock.acquire(blocking=False):
         return jsonify(_busy_payload(engine.state)), 409
 
     try:
-        state = engine.apply_chapter_decision(ch_num, approved, feedback)
+        state = engine.apply_chapter_decision(
+            ch_num,
+            approved,
+            feedback,
+            revision_scope=revision_scope,
+        )
         _complete_decision_task(
             state,
             outcome="approved" if approved else "rejected",
@@ -313,7 +351,11 @@ def api_approve_chapter(project_id: str, ch_num: int):
 
     _states[project_id] = state
     if not approved:
-        next_action = "rewrite_chapter"
+        next_action = {
+            "polish": "polish_chapter",
+            "writing": "rewrite_chapter",
+            "plan": "replan_chapter",
+        }[revision_scope]
     elif state.workflow_phase == "global_review":
         next_action = "global_review"
     else:
@@ -323,6 +365,7 @@ def api_approve_chapter(project_id: str, ch_num: int):
         "success": True,
         "status": "approved" if approved else "rejected",
         "next_action": next_action,
+        "revision_scope": "none" if approved else revision_scope,
     })
 
 
@@ -425,6 +468,8 @@ def api_get_chapter(project_id: str, ch_num: int):
         "word_count": ch.word_count,
         "approval": ch.approval.value,
         "feedback": ch.human_feedback,
+        "human_revision_scope": ch.human_revision_scope,
+        "rewrite_counters": ch.rewrite_counters,
         "revision_count": ch.revision_count,
         "consistency": ch.consistency_report,
         "outline": _serialize_dataclass(ch.outline) if ch.outline else None,
@@ -597,6 +642,24 @@ def _get_project_lock(project_id: str) -> threading.Lock:
             lock = threading.Lock()
             _project_locks[project_id] = lock
         return lock
+
+
+def _project_id_exists(project_id: str) -> bool:
+    with _registry_lock:
+        if project_id in _states or project_id in _engines:
+            return True
+    return (_save_dir / project_id).exists()
+
+
+def _next_writable_chapter(state: GraphNovelState) -> Optional[int]:
+    for chapter_number in range(1, state.total_chapters + 1):
+        if (
+            chapter_number > len(state.chapters)
+            or state.chapters[chapter_number - 1].approval
+            != ApprovalStatus.APPROVED
+        ):
+            return chapter_number
+    return None
 
 
 def _start_project_task(
@@ -855,6 +918,7 @@ def _node_label(node_key: str) -> str:
         ("writing_", "章节写作"),
         ("consistency_review_", "一致性审查"),
         ("narrative_gate_", "叙事逻辑门"),
+        ("quality_gate_", "成稿质量门"),
         ("style_polish_", "风格润色"),
         ("human_approval_", "章节审批"),
     )
@@ -1022,4 +1086,7 @@ def _serialize_dataclass(obj):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5500)
+    server_host = os.environ.get("FLASK_HOST", "").strip() or "127.0.0.1"
+    server_port = int(os.environ.get("PORT", "").strip() or "5500")
+    server_debug = os.environ.get("FLASK_DEBUG", "").strip() == "1"
+    app.run(debug=server_debug, host=server_host, port=server_port)

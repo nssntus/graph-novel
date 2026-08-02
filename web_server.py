@@ -15,6 +15,7 @@ Environment:
 
 import os
 import sys
+from typing import Tuple
 
 from dotenv import load_dotenv
 
@@ -26,9 +27,17 @@ if not os.environ.get("DEEPSEEK_API_KEY"):
 
 from graph_novel.web.app import app
 
+
+def get_server_options() -> Tuple[str, int, bool]:
+    """Resolve explicit development overrides with local-only defaults."""
+    host = os.environ.get("FLASK_HOST", "").strip() or "127.0.0.1"
+    port = int(os.environ.get("PORT", "").strip() or "5500")
+    debug = os.environ.get("FLASK_DEBUG", "").strip() == "1"
+    return host, port, debug
+
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5500))
-    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
-    print(f"\n📖 GraphNovel Web UI starting at http://localhost:{port}")
+    host, port, debug = get_server_options()
+    print(f"\n📖 GraphNovel Web UI starting at http://{host}:{port}")
     print(f"Projects stored in: {os.environ.get('GRAPH_NOVEL_DIR', '~/GraphNovel_Projects')}\n")
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    app.run(host=host, port=port, debug=debug)

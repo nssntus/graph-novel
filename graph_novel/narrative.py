@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 from graph_novel.output_contracts import OutputContractError
 from graph_novel.state import (
     ApprovalStatus,
+    Chapter,
     GraphNovelState,
     KnowledgeRecord,
     NarrativeFact,
@@ -21,33 +22,82 @@ KNOWLEDGE_RANK = {
     "confirmed": 4,
 }
 
+ENDING_EXCERPT_CHARS = 1600
+RECENT_CHAPTER_LIMIT = 8
+RECENT_FACT_LIMIT = 120
+RECENT_KNOWLEDGE_LIMIT = 180
 
-def build_narrative_context(state: GraphNovelState) -> str:
-    """Build compact approved-story context for planning and review."""
-    approved_summaries = []
-    legacy_excerpts = []
-    for chapter in state.chapters:
-        if chapter.approval != ApprovalStatus.APPROVED:
-            continue
-        summary = chapter.narrative_delta.get("chapter_summary", "")
-        if not summary and chapter.outline:
-            summary = chapter.outline.summary
-        approved_summaries.append({
-            "chapter_number": chapter.chapter_number,
-            "summary": summary or chapter.chapter_hook or chapter.title,
-        })
+
+def build_narrative_context(
+    state: GraphNovelState,
+    chapter_number: int = 0,
+    focus_text: str = "",
+) -> str:
+    """Build bounded story context with a mandatory predecessor checkpoint."""
+    target_chapter = chapter_number or state.current_chapter
+    approved = [
+        chapter
+        for chapter in state.chapters
         if (
-            not chapter.narrative_delta.get("facts_established")
-            and not chapter.narrative_delta.get("knowledge_changes")
-        ):
-            chapter_text = chapter.polished_draft or chapter.draft
-            if chapter_text:
-                legacy_excerpts.append({
-                    "chapter_number": chapter.chapter_number,
-                    "text": chapter_text[:6000],
-                })
+            chapter.approval == ApprovalStatus.APPROVED
+            and chapter.chapter_number < target_chapter
+        )
+    ]
+    approved.sort(key=lambda chapter: chapter.chapter_number)
+
+    summaries = []
+    recent_checkpoints = []
+    for chapter in approved[-RECENT_CHAPTER_LIMIT:]:
+        checkpoint = build_continuity_checkpoint(
+            chapter,
+            source="runtime_backfill",
+        )
+        summaries.append({
+            "chapter_number": chapter.chapter_number,
+            "summary": checkpoint["summary"],
+            "hook": checkpoint["hook"],
+        })
+        recent_checkpoints.append({
+            "chapter_number": checkpoint["chapter_number"],
+            "last_scene": checkpoint["last_scene"],
+            "active_goals": checkpoint["active_goals"],
+            "unresolved_actions": checkpoint["unresolved_actions"],
+            "open_threads": checkpoint["open_threads"],
+            "relationship_changes": checkpoint["relationship_changes"],
+            "continuity": checkpoint["continuity"],
+        })
+
+    immediate = None
+    if approved:
+        immediate = build_continuity_checkpoint(
+            approved[-1],
+            source="runtime_backfill",
+        )
+
+    selected_facts = _select_facts(state, focus_text)
+    selected_fact_ids = {fact.id for fact in selected_facts}
+    selected_knowledge = _select_knowledge(
+        state,
+        selected_fact_ids,
+        focus_text,
+    )
+    active_foreshadowing = [
+        {
+            "id": item.id,
+            "description": item.description,
+            "planted_in_chapter": item.planted_in_chapter,
+            "status": item.status,
+        }
+        for item in state.foreshadowing_tracker
+        if item.status != "paid_off"
+    ][-50:]
 
     payload = {
+        "context_version": 2,
+        "target_chapter": target_chapter,
+        "immediate_predecessor": immediate,
+        "recent_checkpoints": recent_checkpoints,
+        "approved_chapter_summaries": summaries,
         "facts": [
             {
                 "fact_id": fact.id,
@@ -57,7 +107,7 @@ def build_narrative_context(state: GraphNovelState) -> str:
                 "status": fact.status,
                 "established_in_chapter": fact.established_in_chapter,
             }
-            for fact in state.narrative_facts
+            for fact in selected_facts
         ],
         "character_knowledge": [
             {
@@ -69,13 +119,158 @@ def build_narrative_context(state: GraphNovelState) -> str:
                 "source_character": record.source_character,
                 "evidence": record.evidence,
             }
-            for record in state.character_knowledge
+            for record in selected_knowledge
         ],
         "continuity": state.continuity_state,
-        "approved_chapter_summaries": approved_summaries[-20:],
-        "legacy_approved_excerpts": legacy_excerpts[-3:],
+        "active_foreshadowing": active_foreshadowing,
+        "context_selection": {
+            "facts_included": len(selected_facts),
+            "facts_total": len(state.narrative_facts),
+            "knowledge_included": len(selected_knowledge),
+            "knowledge_total": len(state.character_knowledge),
+        },
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def build_continuity_checkpoint(
+    chapter: Chapter,
+    source: str = "approved_meta",
+) -> Dict[str, Any]:
+    """Combine reviewed ending metadata with the exact approved prose ending."""
+    existing = chapter.continuity_checkpoint or {}
+    candidate = (
+        existing
+        or chapter.narrative_delta.get("continuity_checkpoint")
+        or chapter.generation_meta.get("continuity_checkpoint")
+        or {}
+    )
+    continuity = existing.get("continuity", {}) or chapter.narrative_delta.get(
+        "continuity_changes",
+        {},
+    )
+    summary = existing.get("summary", "")
+    if not summary:
+        summary = chapter.narrative_delta.get("chapter_summary", "")
+    if not summary and chapter.outline:
+        summary = chapter.outline.summary
+    summary = summary or chapter.chapter_hook or chapter.title
+    text = chapter.polished_draft or chapter.draft
+    ending_excerpt = (
+        text[-ENDING_EXCERPT_CHARS:]
+        if text
+        else existing.get("ending_excerpt", "")
+    )
+
+    return {
+        "chapter_number": chapter.chapter_number,
+        "summary": summary,
+        "hook": chapter.chapter_hook or existing.get("hook", ""),
+        "ending_excerpt": ending_excerpt,
+        "last_scene": candidate.get("last_scene", {
+            "time": continuity.get("time", ""),
+            "location": "",
+            "pov_character": (
+                chapter.outline.pov_character
+                if chapter.outline and chapter.outline.pov_character
+                else ""
+            ),
+            "characters_present": list(
+                continuity.get("character_locations", {})
+            ),
+            "final_action": chapter.chapter_hook or summary,
+            "final_dialogue": "",
+        }),
+        "active_goals": candidate.get("active_goals", []),
+        "unresolved_actions": candidate.get("unresolved_actions", []),
+        "open_threads": candidate.get("open_threads", []),
+        "relationship_changes": candidate.get(
+            "relationship_changes",
+            {},
+        ),
+        "continuity": continuity,
+        "source": existing.get("source", source),
+    }
+
+
+def commit_continuity_checkpoint(chapter: Chapter) -> None:
+    """Commit the candidate checkpoint only after chapter approval."""
+    chapter.continuity_checkpoint = build_continuity_checkpoint(chapter)
+
+
+def _select_facts(
+    state: GraphNovelState,
+    focus_text: str,
+) -> List[NarrativeFact]:
+    active = [
+        fact for fact in state.narrative_facts if fact.status == "active"
+    ]
+    if len(active) <= RECENT_FACT_LIMIT:
+        return active
+    focus_names = [
+        character.name
+        for character in state.characters
+        if character.name and character.name in focus_text
+    ]
+    explicitly_referenced = [
+        fact
+        for fact in active
+        if fact.id in focus_text
+    ]
+    character_relevant = [
+        fact
+        for fact in active
+        if any(name in fact.statement for name in focus_names)
+    ]
+    recent = sorted(
+        active,
+        key=lambda fact: fact.established_in_chapter,
+        reverse=True,
+    )
+    ranked = (
+        sorted(
+            explicitly_referenced,
+            key=lambda fact: fact.established_in_chapter,
+            reverse=True,
+        )
+        + sorted(
+            character_relevant,
+            key=lambda fact: fact.established_in_chapter,
+            reverse=True,
+        )
+        + recent
+    )
+    combined = {}
+    for fact in ranked:
+        if len(combined) >= RECENT_FACT_LIMIT:
+            break
+        combined.setdefault(fact.id, fact)
+    return sorted(
+        combined.values(),
+        key=lambda fact: fact.established_in_chapter,
+    )
+
+
+def _select_knowledge(
+    state: GraphNovelState,
+    selected_fact_ids: set,
+    focus_text: str,
+) -> List[KnowledgeRecord]:
+    focus_names = {
+        character.name
+        for character in state.characters
+        if character.name and character.name in focus_text
+    }
+    candidates = [
+        record
+        for record in state.character_knowledge
+        if record.fact_id in selected_fact_ids
+        or record.character in focus_names
+    ]
+    return sorted(
+        candidates,
+        key=lambda record: record.learned_in_chapter,
+    )[-RECENT_KNOWLEDGE_LIMIT:]
 
 
 def validate_chapter_plan(
@@ -326,7 +521,10 @@ def commit_narrative_delta(
 
 def has_blocking_narrative_violations(report: Dict[str, Any]) -> bool:
     """Return whether a review must take the rewrite edge."""
-    if not report.get("logic_gate_passed", True):
+    if (
+        not report.get("logic_gate_passed", True)
+        or not report.get("bridge_gate_passed", True)
+    ):
         return True
     blocking = {"致命", "严重", "critical", "fatal", "serious"}
     return any(
