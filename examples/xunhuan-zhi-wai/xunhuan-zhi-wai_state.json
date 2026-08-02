@@ -1,0 +1,1099 @@
+{
+  "__model__": "GraphNovelState",
+  "project_id": "xunhuan-zhi-wai",
+  "novel_title": "循环之外",
+  "save_dir": "examples/xunhuan-zhi-wai",
+  "target_platform": "general",
+  "creative_genre": "近未来悬疑",
+  "creative_premise": "一名档案修复师收到来自明天的求救录音，并发现整座城市被困在每周重置的记忆循环中。",
+  "creative_theme": "真正的安全来自共同承担选择，而不是替所有人抹去代价。",
+  "genre_tags": [
+    "近未来",
+    "悬疑",
+    "时间循环",
+    "群像"
+  ],
+  "target_total_words": 120000,
+  "target_total_chapters": 5,
+  "creative_notes": "公开演示项目。展示连续性、人物认知来源、人工 Gate 和受控重写。",
+  "world_setting": {
+    "__model__": "WorldSetting",
+    "era": "近未来",
+    "location": "沿海记忆城市临川",
+    "magic_system": null,
+    "technology_level": "城市公共系统可备份部分集体记忆",
+    "social_structure": "由市政记忆委员会管理公共档案和灾备系统",
+    "key_locations": [
+      {
+        "name": "临川档案馆",
+        "description": "林夏工作的公共记忆修复中心。"
+      },
+      {
+        "name": "十七号线旧站",
+        "description": "隐藏城市记忆备份终端的废弃站台。"
+      },
+      {
+        "name": "备份层",
+        "description": "保存历次重置前最后一分钟记忆的虚拟空间。"
+      }
+    ],
+    "rules_and_laws": "任何记忆修改必须保留来源、授权人和可撤销记录；第七码是被系统抹除的例外。",
+    "history": "三年前的城市级事故后，临川开始执行未公开的周期性记忆重置。",
+    "notes": "雨在零点冻结，是循环即将重置的可见征兆。"
+  },
+  "characters": [
+    {
+      "__model__": "Character",
+      "name": "林夏",
+      "role": "protagonist",
+      "background": "城市档案馆修复师，父亲曾参与记忆灾备系统设计。",
+      "personality": "克制、敏锐，对没有来源的结论保持警惕。",
+      "motivation": "找回被删除的公共选择记录，让城市重新拥有明天。",
+      "arc": {
+        "__model__": "CharacterArc",
+        "character_name": "林夏",
+        "arc_description": "从独自修复真相到把选择权交还所有人。",
+        "current_stage": "resolution",
+        "per_chapter_status": {}
+      },
+      "relationships": {
+        "周砚": "共同调查者",
+        "纪衡": "循环中分化出的另一个自己"
+      },
+      "notes": ""
+    },
+    {
+      "__model__": "Character",
+      "name": "周砚",
+      "role": "supporting",
+      "background": "因追查重复事故而被停职的市政调查员。",
+      "personality": "务实、耐心，只接受可以追溯来源的证据。",
+      "motivation": "证明事故记录被系统性修改。",
+      "arc": {
+        "__model__": "CharacterArc",
+        "character_name": "周砚",
+        "arc_description": "从孤立调查到成为公开选择的推动者。",
+        "current_stage": "resolution",
+        "per_chapter_status": {}
+      },
+      "relationships": {
+        "林夏": "互相校验证据的盟友"
+      },
+      "notes": ""
+    },
+    {
+      "__model__": "Character",
+      "name": "纪衡",
+      "role": "antagonist",
+      "background": "第一次循环中幸存的林夏，以守门人身份维护重置。",
+      "personality": "冷静、疲惫，把不失去任何人视为唯一正确答案。",
+      "motivation": "通过重复重置避免城市作出有代价的选择。",
+      "arc": {
+        "__model__": "CharacterArc",
+        "character_name": "纪衡",
+        "arc_description": "从控制所有人的安全到接受共同承担。",
+        "current_stage": "resolution",
+        "per_chapter_status": {}
+      },
+      "relationships": {
+        "林夏": "同源但选择相反"
+      },
+      "notes": ""
+    }
+  ],
+  "novel_outline": {
+    "__model__": "NovelOutline",
+    "genre": "近未来悬疑",
+    "premise": "档案修复师追查一段来自明天的录音，揭开城市记忆循环。",
+    "theme": "选择权与安全的边界",
+    "target_length": "公开演示短篇 / 5 章",
+    "target_platform": "general",
+    "shuangdian_map": [
+      {
+        "chapter_range": "1-2",
+        "type": "谜面",
+        "description": "未来录音与城市重置日志连续抛出证据。"
+      },
+      {
+        "chapter_range": "3-4",
+        "type": "验证与反转",
+        "description": "角色认知有来源，守门人身份反转。"
+      },
+      {
+        "chapter_range": "5",
+        "type": "高潮",
+        "description": "恢复第七码并终止强制重置。"
+      }
+    ],
+    "chapter_outlines": [
+      {
+        "__model__": "ChapterOutline",
+        "chapter_number": 1,
+        "title": "雨停在零点之前",
+        "summary": "档案修复师林夏收到一段来自明天的求救录音，并发现城市档案中缺失了第七码。",
+        "pov_character": "林夏",
+        "key_events": [
+          "收到未来录音",
+          "核对时间戳",
+          "发现第七码缺失"
+        ],
+        "foreshadowing_to_plant": [
+          "失踪的第七码"
+        ],
+        "foreshadowing_to_pay_off": [],
+        "shuangdian_beat": "强钩子",
+        "chapter_hook_idea": "录音末尾，传来林夏自己的声音。"
+      },
+      {
+        "__model__": "ChapterOutline",
+        "chapter_number": 2,
+        "title": "不存在的站台",
+        "summary": "林夏依照录音抵达废弃地铁站，在封闭站台找到仍在运行的城市记忆终端。",
+        "pov_character": "林夏",
+        "key_events": [
+          "潜入旧站",
+          "启动终端",
+          "读取零点重置记录"
+        ],
+        "foreshadowing_to_plant": [],
+        "foreshadowing_to_pay_off": [],
+        "shuangdian_beat": "小爽点",
+        "chapter_hook_idea": "终端显示：本轮循环只剩六十小时。"
+      },
+      {
+        "__model__": "ChapterOutline",
+        "chapter_number": 3,
+        "title": "记得昨天的人",
+        "summary": "林夏与失眠调查员周砚交换证据，系统拦截周砚不应提前知道的第七码信息。",
+        "pov_character": "林夏",
+        "key_events": [
+          "交换证据",
+          "验证角色认知来源",
+          "定位档案馆暗门"
+        ],
+        "foreshadowing_to_plant": [],
+        "foreshadowing_to_pay_off": [],
+        "shuangdian_beat": "反转",
+        "chapter_hook_idea": "暗门权限的登记人，是三年前已经去世的林夏父亲。"
+      },
+      {
+        "__model__": "ChapterOutline",
+        "chapter_number": 4,
+        "title": "城市的备份",
+        "summary": "两人进入记忆备份层，确认循环不是灾难本身，而是阻止某个选择被执行的安全机制。",
+        "pov_character": "林夏",
+        "key_events": [
+          "进入备份层",
+          "发现循环用途",
+          "遭遇守门人纪衡"
+        ],
+        "foreshadowing_to_plant": [],
+        "foreshadowing_to_pay_off": [],
+        "shuangdian_beat": "大爽点",
+        "chapter_hook_idea": "纪衡摘下面具，和录音中的林夏拥有同一张脸。"
+      },
+      {
+        "__model__": "ChapterOutline",
+        "chapter_number": 5,
+        "title": "循环之外",
+        "summary": "林夏利用第七码恢复被删除的选择记录，在保留城市记忆与终止循环之间作出第三种选择。",
+        "pov_character": "林夏",
+        "key_events": [
+          "恢复第七码",
+          "公开选择记录",
+          "终止强制重置"
+        ],
+        "foreshadowing_to_plant": [],
+        "foreshadowing_to_pay_off": [
+          "失踪的第七码"
+        ],
+        "shuangdian_beat": "高潮",
+        "chapter_hook_idea": "零点过后，雨第一次继续落下。"
+      }
+    ]
+  },
+  "foundation_approval": "approved",
+  "foundation_feedback": "",
+  "workflow_phase": "done",
+  "pending_gate": null,
+  "last_error": {},
+  "active_task": {
+    "id": "demo-global-review",
+    "kind": "global_review",
+    "status": "completed",
+    "current_node": "done",
+    "finished_at": "2026-08-02T20:12:00+08:00"
+  },
+  "execution_events": [
+    {
+      "event": "checkpoint_saved",
+      "node": "human_approval_foundation",
+      "timestamp": "2026-08-02T18:10:00+08:00"
+    },
+    {
+      "event": "gate_decision",
+      "gate": "foundation",
+      "decision": "approved",
+      "timestamp": "2026-08-02T18:12:00+08:00"
+    },
+    {
+      "event": "rewrite_requested",
+      "node": "writing_3",
+      "reason": "character_knowledge_violation",
+      "timestamp": "2026-08-02T19:05:00+08:00"
+    },
+    {
+      "event": "route_selected",
+      "source": "writing_3",
+      "target": "writing_3",
+      "timestamp": "2026-08-02T19:05:01+08:00"
+    },
+    {
+      "event": "gate_decision",
+      "gate": "chapter:5",
+      "decision": "approved",
+      "timestamp": "2026-08-02T20:00:00+08:00"
+    },
+    {
+      "event": "route_selected",
+      "source": "global_review",
+      "target": "done",
+      "timestamp": "2026-08-02T20:12:00+08:00"
+    }
+  ],
+  "chapters": [
+    {
+      "__model__": "Chapter",
+      "chapter_number": 1,
+      "title": "雨停在零点之前",
+      "outline": {
+        "__model__": "ChapterOutline",
+        "chapter_number": 1,
+        "title": "雨停在零点之前",
+        "summary": "档案修复师林夏收到一段来自明天的求救录音，并发现城市档案中缺失了第七码。",
+        "pov_character": "林夏",
+        "key_events": [
+          "收到未来录音",
+          "核对时间戳",
+          "发现第七码缺失"
+        ],
+        "foreshadowing_to_plant": [
+          "失踪的第七码"
+        ],
+        "foreshadowing_to_pay_off": [],
+        "shuangdian_beat": "强钩子",
+        "chapter_hook_idea": "录音末尾，传来林夏自己的声音。"
+      },
+      "plan": {
+        "chapter_goal": "档案修复师林夏收到一段来自明天的求救录音，并发现城市档案中缺失了第七码。",
+        "causal_chain": [
+          "承接上一章已批准事实",
+          "通过现场行动取得新证据",
+          "以可验证的新信息推动下一章"
+        ],
+        "required_fact_ids": [],
+        "planned_facts": [
+          {
+            "id": "F001",
+            "statement": "林夏收到时间戳来自明天的求救录音",
+            "category": "evidence"
+          }
+        ],
+        "information_flow": [
+          {
+            "fact_id": "F001",
+            "character": "林夏",
+            "knowledge_level": "confirmed",
+            "source_type": "recording",
+            "evidence": "亲自播放录音"
+          }
+        ],
+        "opening_bridge": "从上一章结尾的直接后果切入。"
+      },
+      "draft": "零点前十二分钟，雨忽然停在半空。\n\n林夏隔着档案馆的落地窗看见这一幕时，修复台上的旧录音机自己亮了。磁带轮轴缓慢转动，一个女人压着呼吸说：“别让他们删掉第七码。”\n\n声音到这里断了。时间戳却清清楚楚：明天，00:07。\n\n林夏没有立刻相信。她调出城市灾备目录，从一号检索到八号。六号之后直接跳到了八号，像有人从整座城市的记忆里剪走了一格。\n\n她把录音导入离线终端。波形末端藏着第二层声轨，背景是档案馆每天零点才会响起的钟声。\n\n最后两秒，一个熟悉得令她手指发冷的声音贴着麦克风响起。\n\n“林夏，如果你听见这段话，说明我又失败了一次。”\n\n那是她自己的声音。",
+      "consistency_report": {
+        "overall_score": 9,
+        "issues": [],
+        "continuity_passed": true,
+        "summary": "人物认知、时间线和因果链均与已批准状态一致。"
+      },
+      "polished_draft": "零点前十二分钟，雨忽然停在半空。\n\n林夏隔着档案馆的落地窗看见这一幕时，修复台上的旧录音机自己亮了。磁带轮轴缓慢转动，一个女人压着呼吸说：“别让他们删掉第七码。”\n\n声音到这里断了。时间戳却清清楚楚：明天，00:07。\n\n林夏没有立刻相信。她调出城市灾备目录，从一号检索到八号。六号之后直接跳到了八号，像有人从整座城市的记忆里剪走了一格。\n\n她把录音导入离线终端。波形末端藏着第二层声轨，背景是档案馆每天零点才会响起的钟声。\n\n最后两秒，一个熟悉得令她手指发冷的声音贴着麦克风响起。\n\n“林夏，如果你听见这段话，说明我又失败了一次。”\n\n那是她自己的声音。",
+      "approval": "approved",
+      "human_feedback": "保留克制的悬疑感，避免提前解释循环原理。",
+      "word_count": 264,
+      "chapter_hook": "录音末尾，传来林夏自己的声音。",
+      "shuangdian_type": "强钩子",
+      "generation_meta": {
+        "context_mode": "previous_chapter_plus_narrative_state",
+        "contract_validated": true
+      },
+      "narrative_delta": {
+        "chapter_summary": "档案修复师林夏收到一段来自明天的求救录音，并发现城市档案中缺失了第七码。",
+        "facts_established": [
+          {
+            "id": "F001",
+            "statement": "林夏收到时间戳来自明天的求救录音",
+            "category": "evidence"
+          }
+        ],
+        "knowledge_changes": [
+          {
+            "fact_id": "F001",
+            "character": "林夏",
+            "knowledge_level": "confirmed",
+            "source_type": "recording",
+            "evidence": "亲自播放录音"
+          }
+        ],
+        "continuity_changes": {
+          "time": "周日 01:00",
+          "character_locations": {
+            "林夏": "临川档案馆"
+          },
+          "character_conditions": {
+            "林夏": "清醒，轻度疲惫"
+          },
+          "resources": {
+            "倒计时余量": 60
+          }
+        }
+      },
+      "continuity_checkpoint": {
+        "time": "周日 01:00",
+        "location": "临川档案馆",
+        "open_questions": [
+          "录音末尾，传来林夏自己的声音。"
+        ]
+      },
+      "rewrite_feedback": "",
+      "rewrite_counters": {
+        "plan": 0,
+        "writing": 0,
+        "polish": 0
+      },
+      "human_revision_scope": "plan",
+      "revision_count": 0,
+      "revision_history": [],
+      "side_effects_committed": true
+    },
+    {
+      "__model__": "Chapter",
+      "chapter_number": 2,
+      "title": "不存在的站台",
+      "outline": {
+        "__model__": "ChapterOutline",
+        "chapter_number": 2,
+        "title": "不存在的站台",
+        "summary": "林夏依照录音抵达废弃地铁站，在封闭站台找到仍在运行的城市记忆终端。",
+        "pov_character": "林夏",
+        "key_events": [
+          "潜入旧站",
+          "启动终端",
+          "读取零点重置记录"
+        ],
+        "foreshadowing_to_plant": [],
+        "foreshadowing_to_pay_off": [],
+        "shuangdian_beat": "小爽点",
+        "chapter_hook_idea": "终端显示：本轮循环只剩六十小时。"
+      },
+      "plan": {
+        "chapter_goal": "林夏依照录音抵达废弃地铁站，在封闭站台找到仍在运行的城市记忆终端。",
+        "causal_chain": [
+          "承接上一章已批准事实",
+          "通过现场行动取得新证据",
+          "以可验证的新信息推动下一章"
+        ],
+        "required_fact_ids": [],
+        "planned_facts": [
+          {
+            "id": "F002",
+            "statement": "城市已完成六百四十一次记忆重置",
+            "category": "world"
+          }
+        ],
+        "information_flow": [
+          {
+            "fact_id": "F002",
+            "character": "林夏",
+            "knowledge_level": "confirmed",
+            "source_type": "terminal",
+            "evidence": "读取重置日志"
+          }
+        ],
+        "opening_bridge": "从上一章结尾的直接后果切入。"
+      },
+      "draft": "旧地铁十七号线封闭了九年，地图上已经找不到入口。\n\n林夏按照录音里的四组杂音定位，在雨水泵房后找到一扇没有编号的铁门。门锁不认工牌，只认她从第七码目录里抄下的校验串。\n\n站台下方没有轨道，只有一排仍在呼吸般明灭的服务器。屏幕醒来时，灰尘里亮出一行字：城市记忆备份，第六百四十一次重置完成。\n\n她逐条检查日志。每次重置都发生在周日零点，每次都删除同一个选择记录。更异常的是，日志把她列为“未授权维护者”，却连续十二次记录了她的死亡。\n\n终端忽然切换为红色。\n\n距离下一次强制重置：59:59:58。\n\n林夏拔下数据片，站台尽头随即传来脚步。有人在黑暗里说：“这一次，你比上一次早到了七分钟。”",
+      "consistency_report": {
+        "overall_score": 9,
+        "issues": [],
+        "continuity_passed": true,
+        "summary": "人物认知、时间线和因果链均与已批准状态一致。"
+      },
+      "polished_draft": "旧地铁十七号线封闭了九年，地图上已经找不到入口。\n\n林夏按照录音里的四组杂音定位，在雨水泵房后找到一扇没有编号的铁门。门锁不认工牌，只认她从第七码目录里抄下的校验串。\n\n站台下方没有轨道，只有一排仍在呼吸般明灭的服务器。屏幕醒来时，灰尘里亮出一行字：城市记忆备份，第六百四十一次重置完成。\n\n她逐条检查日志。每次重置都发生在周日零点，每次都删除同一个选择记录。更异常的是，日志把她列为“未授权维护者”，却连续十二次记录了她的死亡。\n\n终端忽然切换为红色。\n\n距离下一次强制重置：59:59:58。\n\n林夏拔下数据片，站台尽头随即传来脚步。有人在黑暗里说：“这一次，你比上一次早到了七分钟。”",
+      "approval": "approved",
+      "human_feedback": "保留克制的悬疑感，避免提前解释循环原理。",
+      "word_count": 283,
+      "chapter_hook": "终端显示：本轮循环只剩六十小时。",
+      "shuangdian_type": "小爽点",
+      "generation_meta": {
+        "context_mode": "previous_chapter_plus_narrative_state",
+        "contract_validated": true
+      },
+      "narrative_delta": {
+        "chapter_summary": "林夏依照录音抵达废弃地铁站，在封闭站台找到仍在运行的城市记忆终端。",
+        "facts_established": [
+          {
+            "id": "F002",
+            "statement": "城市已完成六百四十一次记忆重置",
+            "category": "world"
+          }
+        ],
+        "knowledge_changes": [
+          {
+            "fact_id": "F002",
+            "character": "林夏",
+            "knowledge_level": "confirmed",
+            "source_type": "terminal",
+            "evidence": "读取重置日志"
+          }
+        ],
+        "continuity_changes": {
+          "time": "周日 13:00",
+          "character_locations": {
+            "林夏": "十七号线旧站"
+          },
+          "character_conditions": {
+            "林夏": "清醒，轻度疲惫"
+          },
+          "resources": {
+            "倒计时余量": 48
+          }
+        }
+      },
+      "continuity_checkpoint": {
+        "time": "周日 13:00",
+        "location": "十七号线旧站",
+        "open_questions": [
+          "终端显示：本轮循环只剩六十小时。"
+        ]
+      },
+      "rewrite_feedback": "",
+      "rewrite_counters": {
+        "plan": 0,
+        "writing": 0,
+        "polish": 0
+      },
+      "human_revision_scope": "plan",
+      "revision_count": 0,
+      "revision_history": [],
+      "side_effects_committed": true
+    },
+    {
+      "__model__": "Chapter",
+      "chapter_number": 3,
+      "title": "记得昨天的人",
+      "outline": {
+        "__model__": "ChapterOutline",
+        "chapter_number": 3,
+        "title": "记得昨天的人",
+        "summary": "林夏与失眠调查员周砚交换证据，系统拦截周砚不应提前知道的第七码信息。",
+        "pov_character": "林夏",
+        "key_events": [
+          "交换证据",
+          "验证角色认知来源",
+          "定位档案馆暗门"
+        ],
+        "foreshadowing_to_plant": [],
+        "foreshadowing_to_pay_off": [],
+        "shuangdian_beat": "反转",
+        "chapter_hook_idea": "暗门权限的登记人，是三年前已经去世的林夏父亲。"
+      },
+      "plan": {
+        "chapter_goal": "林夏与失眠调查员周砚交换证据，系统拦截周砚不应提前知道的第七码信息。",
+        "causal_chain": [
+          "承接上一章已批准事实",
+          "通过现场行动取得新证据",
+          "以可验证的新信息推动下一章"
+        ],
+        "required_fact_ids": [],
+        "planned_facts": [
+          {
+            "id": "F003",
+            "statement": "周砚在林夏展示证据后得知第七码",
+            "category": "knowledge"
+          }
+        ],
+        "information_flow": [
+          {
+            "fact_id": "F003",
+            "character": "周砚",
+            "knowledge_level": "confirmed",
+            "source_type": "shared_evidence",
+            "source_character": "林夏",
+            "evidence": "林夏展示录音与日志"
+          }
+        ],
+        "opening_bridge": "从上一章结尾的直接后果切入。"
+      },
+      "draft": "来人叫周砚，市政事故调查处的停职调查员。\n\n他没有说自己知道什么，只把一张纸质验尸记录推到灯下。死者姓名栏写着林夏，死亡时间却是两天后。\n\n林夏先展示未来录音，再展示终端日志。直到她把“第七码”三个字写在纸上，周砚才第一次重复这个编号。\n\n“所以它不是传闻，”他说，“是你刚刚给我的证据。”\n\n两人的信息由此对齐。周砚提供事故现场的封锁记录，林夏用档案权限反查签发者。路径最终指向档案馆地下三层，一扇从未出现在建筑图纸上的暗门。\n\n权限登记人：林成川。\n\n林夏盯着父亲的名字。三年前，她亲手整理过他的死亡档案。\n\n暗门从里面被敲了三下。",
+      "consistency_report": {
+        "overall_score": 9,
+        "issues": [],
+        "continuity_passed": true,
+        "summary": "人物认知、时间线和因果链均与已批准状态一致。"
+      },
+      "polished_draft": "来人叫周砚，市政事故调查处的停职调查员。\n\n他没有说自己知道什么，只把一张纸质验尸记录推到灯下。死者姓名栏写着林夏，死亡时间却是两天后。\n\n林夏先展示未来录音，再展示终端日志。直到她把“第七码”三个字写在纸上，周砚才第一次重复这个编号。\n\n“所以它不是传闻，”他说，“是你刚刚给我的证据。”\n\n两人的信息由此对齐。周砚提供事故现场的封锁记录，林夏用档案权限反查签发者。路径最终指向档案馆地下三层，一扇从未出现在建筑图纸上的暗门。\n\n权限登记人：林成川。\n\n林夏盯着父亲的名字。三年前，她亲手整理过他的死亡档案。\n\n暗门从里面被敲了三下。",
+      "approval": "approved",
+      "human_feedback": "保留克制的悬疑感，避免提前解释循环原理。",
+      "word_count": 254,
+      "chapter_hook": "暗门权限的登记人，是三年前已经去世的林夏父亲。",
+      "shuangdian_type": "反转",
+      "generation_meta": {
+        "context_mode": "previous_chapter_plus_narrative_state",
+        "contract_validated": true
+      },
+      "narrative_delta": {
+        "chapter_summary": "林夏与失眠调查员周砚交换证据，系统拦截周砚不应提前知道的第七码信息。",
+        "facts_established": [
+          {
+            "id": "F003",
+            "statement": "周砚在林夏展示证据后得知第七码",
+            "category": "knowledge"
+          }
+        ],
+        "knowledge_changes": [
+          {
+            "fact_id": "F003",
+            "character": "周砚",
+            "knowledge_level": "confirmed",
+            "source_type": "shared_evidence",
+            "source_character": "林夏",
+            "evidence": "林夏展示录音与日志"
+          }
+        ],
+        "continuity_changes": {
+          "time": "周日 25:00",
+          "character_locations": {
+            "林夏": "档案馆地下三层"
+          },
+          "character_conditions": {
+            "林夏": "清醒，轻度疲惫"
+          },
+          "resources": {
+            "倒计时余量": 36
+          }
+        }
+      },
+      "continuity_checkpoint": {
+        "time": "周日 25:00",
+        "location": "档案馆地下三层",
+        "open_questions": [
+          "暗门权限的登记人，是三年前已经去世的林夏父亲。"
+        ]
+      },
+      "rewrite_feedback": "",
+      "rewrite_counters": {
+        "plan": 0,
+        "writing": 1,
+        "polish": 0
+      },
+      "human_revision_scope": "plan",
+      "revision_count": 1,
+      "revision_history": [
+        {
+          "scope": "writing",
+          "reason": "初稿让周砚提前知道第七码，触发角色认知越权检查。",
+          "result": "删除越权信息，改为由林夏展示证据后再建立认知记录。"
+        }
+      ],
+      "side_effects_committed": true
+    },
+    {
+      "__model__": "Chapter",
+      "chapter_number": 4,
+      "title": "城市的备份",
+      "outline": {
+        "__model__": "ChapterOutline",
+        "chapter_number": 4,
+        "title": "城市的备份",
+        "summary": "两人进入记忆备份层，确认循环不是灾难本身，而是阻止某个选择被执行的安全机制。",
+        "pov_character": "林夏",
+        "key_events": [
+          "进入备份层",
+          "发现循环用途",
+          "遭遇守门人纪衡"
+        ],
+        "foreshadowing_to_plant": [],
+        "foreshadowing_to_pay_off": [],
+        "shuangdian_beat": "大爽点",
+        "chapter_hook_idea": "纪衡摘下面具，和录音中的林夏拥有同一张脸。"
+      },
+      "plan": {
+        "chapter_goal": "两人进入记忆备份层，确认循环不是灾难本身，而是阻止某个选择被执行的安全机制。",
+        "causal_chain": [
+          "承接上一章已批准事实",
+          "通过现场行动取得新证据",
+          "以可验证的新信息推动下一章"
+        ],
+        "required_fact_ids": [],
+        "planned_facts": [
+          {
+            "id": "F004",
+            "statement": "循环用于阻止城市执行集体选择",
+            "category": "causality"
+          }
+        ],
+        "information_flow": [
+          {
+            "fact_id": "F004",
+            "character": "林夏",
+            "knowledge_level": "confirmed",
+            "source_type": "archive",
+            "evidence": "读取循环原始用途"
+          }
+        ],
+        "opening_bridge": "从上一章结尾的直接后果切入。"
+      },
+      "draft": "门后不是房间，而是一座被压缩的城市。\n\n无数透明街区悬在黑暗中，每一扇窗都保存着某个市民在重置前最后一分钟的记忆。林夏看见六百四十个版本的自己走向不同结局，却都在零点归于空白。\n\n周砚从备份索引里找到了循环的原始用途：它不是为了躲避灾难，而是为了阻止城市执行一项不可撤回的集体选择。有人把“保护”改写成了永远不允许选择发生。\n\n守门人纪衡站在主控桥上，要求他们交出数据片。他说循环让所有人活着，记忆只是可以支付的成本。\n\n林夏拒绝。纪衡抬手摘下面具。\n\n那张脸与她一模一样，只是更疲惫，眼角多了一道烧伤。\n\n“我是第七码留下的你，”纪衡说，“也是第一次按下重置的人。”",
+      "consistency_report": {
+        "overall_score": 9,
+        "issues": [],
+        "continuity_passed": true,
+        "summary": "人物认知、时间线和因果链均与已批准状态一致。"
+      },
+      "polished_draft": "门后不是房间，而是一座被压缩的城市。\n\n无数透明街区悬在黑暗中，每一扇窗都保存着某个市民在重置前最后一分钟的记忆。林夏看见六百四十个版本的自己走向不同结局，却都在零点归于空白。\n\n周砚从备份索引里找到了循环的原始用途：它不是为了躲避灾难，而是为了阻止城市执行一项不可撤回的集体选择。有人把“保护”改写成了永远不允许选择发生。\n\n守门人纪衡站在主控桥上，要求他们交出数据片。他说循环让所有人活着，记忆只是可以支付的成本。\n\n林夏拒绝。纪衡抬手摘下面具。\n\n那张脸与她一模一样，只是更疲惫，眼角多了一道烧伤。\n\n“我是第七码留下的你，”纪衡说，“也是第一次按下重置的人。”",
+      "approval": "approved",
+      "human_feedback": "保留克制的悬疑感，避免提前解释循环原理。",
+      "word_count": 272,
+      "chapter_hook": "纪衡摘下面具，和录音中的林夏拥有同一张脸。",
+      "shuangdian_type": "大爽点",
+      "generation_meta": {
+        "context_mode": "previous_chapter_plus_narrative_state",
+        "contract_validated": true
+      },
+      "narrative_delta": {
+        "chapter_summary": "两人进入记忆备份层，确认循环不是灾难本身，而是阻止某个选择被执行的安全机制。",
+        "facts_established": [
+          {
+            "id": "F004",
+            "statement": "循环用于阻止城市执行集体选择",
+            "category": "causality"
+          }
+        ],
+        "knowledge_changes": [
+          {
+            "fact_id": "F004",
+            "character": "林夏",
+            "knowledge_level": "confirmed",
+            "source_type": "archive",
+            "evidence": "读取循环原始用途"
+          }
+        ],
+        "continuity_changes": {
+          "time": "周日 37:00",
+          "character_locations": {
+            "林夏": "城市记忆备份层"
+          },
+          "character_conditions": {
+            "林夏": "清醒，轻度疲惫"
+          },
+          "resources": {
+            "倒计时余量": 24
+          }
+        }
+      },
+      "continuity_checkpoint": {
+        "time": "周日 37:00",
+        "location": "城市记忆备份层",
+        "open_questions": [
+          "纪衡摘下面具，和录音中的林夏拥有同一张脸。"
+        ]
+      },
+      "rewrite_feedback": "",
+      "rewrite_counters": {
+        "plan": 0,
+        "writing": 0,
+        "polish": 0
+      },
+      "human_revision_scope": "plan",
+      "revision_count": 0,
+      "revision_history": [],
+      "side_effects_committed": true
+    },
+    {
+      "__model__": "Chapter",
+      "chapter_number": 5,
+      "title": "循环之外",
+      "outline": {
+        "__model__": "ChapterOutline",
+        "chapter_number": 5,
+        "title": "循环之外",
+        "summary": "林夏利用第七码恢复被删除的选择记录，在保留城市记忆与终止循环之间作出第三种选择。",
+        "pov_character": "林夏",
+        "key_events": [
+          "恢复第七码",
+          "公开选择记录",
+          "终止强制重置"
+        ],
+        "foreshadowing_to_plant": [],
+        "foreshadowing_to_pay_off": [
+          "失踪的第七码"
+        ],
+        "shuangdian_beat": "高潮",
+        "chapter_hook_idea": "零点过后，雨第一次继续落下。"
+      },
+      "plan": {
+        "chapter_goal": "林夏利用第七码恢复被删除的选择记录，在保留城市记忆与终止循环之间作出第三种选择。",
+        "causal_chain": [
+          "承接上一章已批准事实",
+          "通过现场行动取得新证据",
+          "以可验证的新信息推动下一章"
+        ],
+        "required_fact_ids": [],
+        "planned_facts": [
+          {
+            "id": "F005",
+            "statement": "城市终止强制重置并公开保存选择权",
+            "category": "resolution"
+          }
+        ],
+        "information_flow": [
+          {
+            "fact_id": "F005",
+            "character": "林夏",
+            "knowledge_level": "confirmed",
+            "source_type": "direct_action",
+            "evidence": "亲自拆分最终密钥"
+          }
+        ],
+        "opening_bridge": "从上一章结尾的直接后果切入。"
+      },
+      "draft": "第七码保存的不是答案，而是被删除的投票过程。\n\n林夏终于明白，纪衡一次次重置城市，是因为她无法接受任何包含牺牲的结果。可抹去选择并没有消除代价，只是让所有人被困在没有明天的安全里。\n\n她没有关闭备份，也没有继续循环。她把六百四十次重置记录发送到每一个仍亮着的终端，让整座城市共同看见被隐瞒的成本。\n\n主控桥上的倒计时归零，却没有自动重置。系统等待新的授权。\n\n周砚提交公开表决，林夏则把最终密钥拆成千万份，交给每一个拥有城市记忆的人。再也没有谁能独自替所有人选择。\n\n零点过去一分钟，悬在空中的雨滴落在玻璃上。\n\n林夏听见城市久违的雨声。档案终端生成了一个从未出现过的日期：星期一。\n\n循环之外，明天终于开始了。",
+      "consistency_report": {
+        "overall_score": 9,
+        "issues": [],
+        "continuity_passed": true,
+        "summary": "人物认知、时间线和因果链均与已批准状态一致。"
+      },
+      "polished_draft": "第七码保存的不是答案，而是被删除的投票过程。\n\n林夏终于明白，纪衡一次次重置城市，是因为她无法接受任何包含牺牲的结果。可抹去选择并没有消除代价，只是让所有人被困在没有明天的安全里。\n\n她没有关闭备份，也没有继续循环。她把六百四十次重置记录发送到每一个仍亮着的终端，让整座城市共同看见被隐瞒的成本。\n\n主控桥上的倒计时归零，却没有自动重置。系统等待新的授权。\n\n周砚提交公开表决，林夏则把最终密钥拆成千万份，交给每一个拥有城市记忆的人。再也没有谁能独自替所有人选择。\n\n零点过去一分钟，悬在空中的雨滴落在玻璃上。\n\n林夏听见城市久违的雨声。档案终端生成了一个从未出现过的日期：星期一。\n\n循环之外，明天终于开始了。",
+      "approval": "approved",
+      "human_feedback": "保留克制的悬疑感，避免提前解释循环原理。",
+      "word_count": 292,
+      "chapter_hook": "零点过后，雨第一次继续落下。",
+      "shuangdian_type": "高潮",
+      "generation_meta": {
+        "context_mode": "previous_chapter_plus_narrative_state",
+        "contract_validated": true
+      },
+      "narrative_delta": {
+        "chapter_summary": "林夏利用第七码恢复被删除的选择记录，在保留城市记忆与终止循环之间作出第三种选择。",
+        "facts_established": [
+          {
+            "id": "F005",
+            "statement": "城市终止强制重置并公开保存选择权",
+            "category": "resolution"
+          }
+        ],
+        "knowledge_changes": [
+          {
+            "fact_id": "F005",
+            "character": "林夏",
+            "knowledge_level": "confirmed",
+            "source_type": "direct_action",
+            "evidence": "亲自拆分最终密钥"
+          }
+        ],
+        "continuity_changes": {
+          "time": "周日 49:00",
+          "character_locations": {
+            "林夏": "临川主控桥"
+          },
+          "character_conditions": {
+            "林夏": "清醒，轻度疲惫"
+          },
+          "resources": {
+            "倒计时余量": 12
+          }
+        }
+      },
+      "continuity_checkpoint": {
+        "time": "周日 49:00",
+        "location": "临川主控桥",
+        "open_questions": [
+          "零点过后，雨第一次继续落下。"
+        ]
+      },
+      "rewrite_feedback": "",
+      "rewrite_counters": {
+        "plan": 0,
+        "writing": 0,
+        "polish": 0
+      },
+      "human_revision_scope": "plan",
+      "revision_count": 0,
+      "revision_history": [],
+      "side_effects_committed": true
+    }
+  ],
+  "current_chapter": 5,
+  "total_chapters": 5,
+  "character_arc_tracker": {
+    "林夏": {
+      "__model__": "CharacterArc",
+      "character_name": "林夏",
+      "arc_description": "从独自修复真相到把选择权交还所有人。",
+      "current_stage": "resolution",
+      "per_chapter_status": {}
+    },
+    "周砚": {
+      "__model__": "CharacterArc",
+      "character_name": "周砚",
+      "arc_description": "从孤立调查到成为公开选择的推动者。",
+      "current_stage": "resolution",
+      "per_chapter_status": {}
+    },
+    "纪衡": {
+      "__model__": "CharacterArc",
+      "character_name": "纪衡",
+      "arc_description": "从控制所有人的安全到接受共同承担。",
+      "current_stage": "resolution",
+      "per_chapter_status": {}
+    }
+  },
+  "foreshadowing_tracker": [
+    {
+      "__model__": "Foreshadowing",
+      "id": "FS001",
+      "description": "城市档案中失踪的第七码",
+      "planted_in_chapter": 1,
+      "payoff_chapter": 5,
+      "payoff_description": "第七码恢复被删除的集体选择记录。",
+      "status": "paid_off"
+    },
+    {
+      "__model__": "Foreshadowing",
+      "id": "FS002",
+      "description": "录音中与林夏相同的声音",
+      "planted_in_chapter": 1,
+      "payoff_chapter": 4,
+      "payoff_description": "声音来自第一次循环中成为守门人的纪衡。",
+      "status": "paid_off"
+    }
+  ],
+  "narrative_facts": [
+    {
+      "__model__": "NarrativeFact",
+      "id": "F001",
+      "statement": "林夏收到时间戳来自明天的求救录音",
+      "category": "evidence",
+      "established_in_chapter": 1,
+      "visibility": "private",
+      "status": "active"
+    },
+    {
+      "__model__": "NarrativeFact",
+      "id": "F002",
+      "statement": "城市已完成六百四十一次记忆重置",
+      "category": "world",
+      "established_in_chapter": 2,
+      "visibility": "private",
+      "status": "active"
+    },
+    {
+      "__model__": "NarrativeFact",
+      "id": "F003",
+      "statement": "周砚在林夏展示证据后得知第七码",
+      "category": "knowledge",
+      "established_in_chapter": 3,
+      "visibility": "private",
+      "status": "active"
+    },
+    {
+      "__model__": "NarrativeFact",
+      "id": "F004",
+      "statement": "循环用于阻止城市执行集体选择",
+      "category": "causality",
+      "established_in_chapter": 4,
+      "visibility": "private",
+      "status": "active"
+    },
+    {
+      "__model__": "NarrativeFact",
+      "id": "F005",
+      "statement": "城市终止强制重置并公开保存选择权",
+      "category": "resolution",
+      "established_in_chapter": 5,
+      "visibility": "public",
+      "status": "active"
+    }
+  ],
+  "character_knowledge": [
+    {
+      "__model__": "KnowledgeRecord",
+      "fact_id": "F001",
+      "character": "林夏",
+      "knowledge_level": "confirmed",
+      "learned_in_chapter": 1,
+      "source_type": "recording",
+      "source_character": "",
+      "evidence": "亲自播放录音"
+    },
+    {
+      "__model__": "KnowledgeRecord",
+      "fact_id": "F002",
+      "character": "林夏",
+      "knowledge_level": "confirmed",
+      "learned_in_chapter": 2,
+      "source_type": "terminal",
+      "source_character": "",
+      "evidence": "读取重置日志"
+    },
+    {
+      "__model__": "KnowledgeRecord",
+      "fact_id": "F003",
+      "character": "周砚",
+      "knowledge_level": "confirmed",
+      "learned_in_chapter": 3,
+      "source_type": "shared_evidence",
+      "source_character": "林夏",
+      "evidence": "林夏展示录音与日志"
+    },
+    {
+      "__model__": "KnowledgeRecord",
+      "fact_id": "F004",
+      "character": "林夏",
+      "knowledge_level": "confirmed",
+      "learned_in_chapter": 4,
+      "source_type": "archive",
+      "source_character": "",
+      "evidence": "读取循环原始用途"
+    },
+    {
+      "__model__": "KnowledgeRecord",
+      "fact_id": "F005",
+      "character": "林夏",
+      "knowledge_level": "confirmed",
+      "learned_in_chapter": 5,
+      "source_type": "direct_action",
+      "source_character": "",
+      "evidence": "亲自拆分最终密钥"
+    }
+  ],
+  "continuity_state": {
+    "time": "星期一 00:01",
+    "character_locations": {
+      "林夏": "临川主控桥",
+      "周砚": "临川主控桥",
+      "纪衡": "城市记忆备份层"
+    },
+    "character_conditions": {
+      "林夏": "清醒",
+      "周砚": "轻伤",
+      "纪衡": "解除守门权限"
+    },
+    "resources": {
+      "强制重置权限": 0,
+      "公开密钥分片": 10000000
+    }
+  },
+  "chapter_hooks": [
+    "录音末尾，传来林夏自己的声音。",
+    "终端显示：本轮循环只剩六十小时。",
+    "暗门权限的登记人，是三年前已经去世的林夏父亲。",
+    "纪衡摘下面具，和录音中的林夏拥有同一张脸。",
+    "零点过后，雨第一次继续落下。"
+  ],
+  "shuangdian_schedule": [
+    {
+      "chapter_range": "1-2",
+      "type": "谜面",
+      "description": "未来录音与城市重置日志连续抛出证据。"
+    },
+    {
+      "chapter_range": "3-4",
+      "type": "验证与反转",
+      "description": "角色认知有来源，守门人身份反转。"
+    },
+    {
+      "chapter_range": "5",
+      "type": "高潮",
+      "description": "恢复第七码并终止强制重置。"
+    }
+  ],
+  "node_status": {
+    "world_building": "completed",
+    "character_design": "completed",
+    "outline_planning": "completed",
+    "human_approval_foundation": "completed",
+    "global_review": "completed",
+    "chapter_planning_1": "completed",
+    "writing_1": "completed",
+    "style_polish_1": "completed",
+    "consistency_review_1": "completed",
+    "human_approval_1": "completed",
+    "chapter_planning_2": "completed",
+    "writing_2": "completed",
+    "style_polish_2": "completed",
+    "consistency_review_2": "completed",
+    "human_approval_2": "completed",
+    "chapter_planning_3": "completed",
+    "writing_3": "completed",
+    "style_polish_3": "completed",
+    "consistency_review_3": "completed",
+    "human_approval_3": "completed",
+    "chapter_planning_4": "completed",
+    "writing_4": "completed",
+    "style_polish_4": "completed",
+    "consistency_review_4": "completed",
+    "human_approval_4": "completed",
+    "chapter_planning_5": "completed",
+    "writing_5": "completed",
+    "style_polish_5": "completed",
+    "consistency_review_5": "completed",
+    "human_approval_5": "completed"
+  },
+  "global_review_report": {
+    "overall_score": 9,
+    "ready_for_platform": true,
+    "golden_three_analysis": {
+      "ch1_quality": "未来录音快速建立冲突",
+      "ch2_quality": "重置日志升级谜面",
+      "ch3_quality": "认知来源与父亲身份形成反转",
+      "estimated_ch3_retention": "高"
+    },
+    "shuangdian_analysis": {
+      "density": "均衡",
+      "small_beats_count": 2,
+      "big_beats_count": 2,
+      "issues": []
+    },
+    "hook_analysis": {
+      "strong": 5,
+      "weak": 0,
+      "missing": 0,
+      "problem_chapters": []
+    },
+    "ai_disease_summary": {
+      "total_found": 0,
+      "overall_risk": "低",
+      "high_risk_chapters": []
+    },
+    "algorithm_fitness": {
+      "estimated_ch10_retention": "演示短篇不适用",
+      "estimated_10w_retention": "演示短篇不适用",
+      "estimated_follow_rate": "高",
+      "shouxiu_ready": true
+    },
+    "platform_competitiveness": {
+      "strength": "谜面集中、角色认知来源清晰、每章结尾均推动下一步行动。",
+      "weakness": "公开演示篇幅较短，尚未验证长线支线承载能力。",
+      "differentiation": "通过 Narrative State 明确追踪事实、认知和连续性。"
+    },
+    "final_recommendations": [
+      "扩写时保持第七码与循环用途的证据逐级揭示。",
+      "新增角色前先声明其可见事实与信息来源。"
+    ]
+  },
+  "created_at": "2026-08-02T18:00:00+08:00",
+  "version": 8
+}
