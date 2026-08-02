@@ -77,4 +77,5 @@
   window.fetchProjectTask = fetchProjectTask;
   window.waitForProjectTask = waitForProjectTask;
   window.renderProjectTaskStatus = renderProjectTaskStatus;
+  window.escapeHtml = escapeHtml;
 })();

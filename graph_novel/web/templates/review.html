@@ -162,7 +162,7 @@ async function monitorReviewTask(taskId) {
     renderProjectTaskStatus(banner, payload);
     if (payload.status === 'running') {
       status.innerHTML = '<p class="muted">全局终审运行中，当前节点：'
-        + (payload.current_node_label || '全局终审') + '</p>';
+        + escapeHtml(payload.current_node_label || '全局终审') + '</p>';
     }
   });
 
@@ -186,11 +186,11 @@ async function runGlobalReview() {
     if (resp.status === 202 && data.success) {
       await monitorReviewTask(data.task.id);
     } else {
-      status.innerHTML = '<p class="alert alert-error">启动失败：' + (data.error || '失败') + '</p>';
+      status.innerHTML = '<p class="alert alert-error">启动失败：' + escapeHtml(data.error || '失败') + '</p>';
       setReviewRunning(false);
     }
   } catch (err) {
-    status.innerHTML = '<p class="alert alert-error">连接错误：' + err.message + '</p>';
+    status.innerHTML = '<p class="alert alert-error">连接错误：' + escapeHtml(err.message) + '</p>';
     setReviewRunning(false);
   }
 }
@@ -208,7 +208,7 @@ async function resumeReviewTask() {
     }
   } catch (err) {
     document.getElementById('project-task-status').innerHTML =
-      '<p class="alert alert-error">状态读取失败：' + err.message + '</p>';
+      '<p class="alert alert-error">状态读取失败：' + escapeHtml(err.message) + '</p>';
   }
 }
 

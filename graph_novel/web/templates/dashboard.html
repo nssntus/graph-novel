@@ -152,7 +152,7 @@ async function resumeDashboardTask() {
     }
   } catch (err) {
     banner.innerHTML =
-      '<p class="alert alert-error">状态读取失败：' + err.message + '</p>';
+      '<p class="alert alert-error">状态读取失败：' + escapeHtml(err.message) + '</p>';
   }
 }
 

@@ -45,6 +45,8 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的文字润色师。你专门�
 剧情事实保护：
 - 不得新增、删除或改变事件、角色认知、时间、位置、伤势、资源和能力
 - 不得把“怀疑/推断”润色成“确认”
+- 不得改变 opening_bridge 已规定的开场承接步骤或事件顺序
+- 不得改变 continuity_checkpoint 所记录的结尾地点、在场角色、最终动作和未完成事项
 
 润色后完整输出正文。如有编辑建议，放在 "---编辑建议---" 分隔符后（可选）。
 只输出润色后的正文。"""
@@ -56,7 +58,8 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     state.node_status[f"style_polish_{ch_num}"] = NodeStatus.IN_PROGRESS
 
     chapter = state.chapters[ch_num - 1]
-    if not chapter.draft:
+    source_text = chapter.polished_draft or chapter.draft
+    if not source_text:
         state.node_status[f"style_polish_{ch_num}"] = NodeStatus.SKIPPED
         return state
 
@@ -70,6 +73,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
                 consistency_notes += f"- {i.get('description', '')[:100]}\n"
 
     narrative_constraints = json.dumps({
+        "opening_bridge": chapter.plan.get("opening_bridge", {}),
         "causal_chain": chapter.plan.get("causal_chain", []),
         "facts_established": chapter.narrative_delta.get(
             "facts_established",
@@ -83,6 +87,10 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
             "continuity_changes",
             {},
         ),
+        "continuity_checkpoint": chapter.narrative_delta.get(
+            "continuity_checkpoint",
+            {},
+        ),
     }, ensure_ascii=False, indent=2)
 
     user_prompt = f"""润色以下章节的文字。
@@ -92,8 +100,11 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 以下叙事约束不可更改：
 {narrative_constraints}
 
+本轮修订反馈：
+{chapter.rewrite_feedback or '无'}
+
 == 第{ch_num}章：{chapter.title}（{chapter.word_count}字）==
-{chapter.draft[:12000]}
+{source_text[:12000]}
 
 请润色并输出完整正文。"""
 

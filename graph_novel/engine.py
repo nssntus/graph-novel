@@ -12,18 +12,16 @@ Phase 1 (Foundation — parallelizable):
         │ (if approved, proceed)
         ▼
 
-Phase 2 (Per-Chapter Pipeline — sequential loop):
-  [Chapter Planning] ──> [Writing] ──> [Consistency Review]
-                              ▲              │
-                              │    (if rewrite needed)
-                              └──────────────┘
-                                              │
-                                    [Style Polish]
-                                              │
-                                    [Human Approval: Chapter]
-                                              │
-                                    (if rejected → Chapter Planning w/feedback)
-                                    (if approved → next chapter or Global Review)
+Phase 2 (Per-Chapter Pipeline — conditional loops):
+  [Chapter Planning] ──> [Writing] ──> [Style Polish]
+          ▲                  ▲                ▲
+          └── plan issue ────┤                │
+                             └─ writing issue ┤
+                                      polish issue
+                                               │
+                                  [Final Consistency Review]
+                                               │
+                                  [Human Approval: Chapter]
 
 Phase 3 (Final Pass):
   [Global Review] ──> DONE
@@ -56,6 +54,16 @@ from graph_novel.nodes import (
     global_review,
 )
 from graph_novel.narrative import has_blocking_narrative_violations
+
+
+REWRITE_LIMITS = {
+    "writing_contract": 2,
+    "plan": 2,
+    "writing": 2,
+    "polish": 2,
+}
+MAX_TOTAL_REWRITES = 4
+REVISION_SCOPES = {"plan", "writing", "polish"}
 
 
 class GraphPhase(Enum):
@@ -399,7 +407,7 @@ class GraphNovelEngine:
         self.apply_chapter_decision(ch_num, approved, feedback)
 
     def run_chapter_generation(self, ch_num: int) -> GraphNovelState:
-        """Run nodes 4-7 and stop at the persisted chapter approval Gate."""
+        """Run the scoped chapter graph and stop at its approval Gate."""
         self.validate_chapter_generation(ch_num)
         self._ensure_chapter_slots()
         self.phase = GraphPhase.CHAPTER_LOOP
@@ -412,18 +420,39 @@ class GraphNovelEngine:
 
         chapter = self.state.chapters[ch_num - 1]
         if chapter.approval == ApprovalStatus.REJECTED:
+            start_scope = self._normalize_revision_scope(
+                chapter.human_revision_scope,
+            )
+            self._reset_rewrite_counters(chapter)
             self._prepare_chapter_revision(
                 chapter,
                 chapter.human_feedback or "人工驳回后重写",
                 source="human",
+                scope=start_scope,
             )
+        elif not chapter.rewrite_counters:
+            self._reset_rewrite_counters(chapter)
+        else:
+            self._ensure_rewrite_counters(chapter)
 
-        max_rewrites = 2  # Maximum rewrite attempts per chapter
-        rewrite_count = 0
-        needs_plan = True
+        needs_plan = self._node_requires_run(
+            f"chapter_planning_{ch_num}",
+            bool(chapter.plan),
+        )
+        needs_writing = needs_plan or self._node_requires_run(
+            f"writing_{ch_num}",
+            bool(chapter.draft),
+        )
+        needs_polish = needs_writing or self._node_requires_run(
+            f"style_polish_{ch_num}",
+            bool(chapter.polished_draft),
+        )
+        needs_review = needs_polish or self._node_requires_run(
+            f"consistency_review_{ch_num}",
+            bool(chapter.consistency_report),
+        )
 
         while True:
-            # Node 4: Chapter Planning
             if needs_plan:
                 self._execute_required_node(
                     f"chapter_planning_{ch_num}",
@@ -435,170 +464,202 @@ class GraphNovelEngine:
                     "plan_ready",
                 )
                 needs_plan = False
+                needs_writing = True
+                needs_polish = True
 
-            # Node 5: Chapter Writing
-            self._execute_required_node(f"writing_{ch_num}", writing.run_node)
-
-            chapter = self.state.chapters[ch_num - 1]
-            if not chapter.draft:
-                message = f"Chapter {ch_num} writing produced no draft."
-                self.state.node_status[f"writing_{ch_num}"] = NodeStatus.FAILED
-                self.state.last_error = {
-                    "node": f"writing_{ch_num}",
-                    "message": message,
-                }
-                self._require_completed(f"writing_{ch_num}")
-
-            contract_violations = chapter.narrative_delta.get(
-                "contract_violations",
-                [],
-            )
-            if contract_violations:
-                feedback = self._format_narrative_contract_feedback(
-                    contract_violations,
+            if needs_writing:
+                self._execute_required_node(
+                    f"writing_{ch_num}",
+                    writing.run_node,
                 )
-                if rewrite_count < max_rewrites:
-                    rewrite_count += 1
-                    self.state.log(
-                        f"Chapter {ch_num} writing exceeded its narrative "
-                        f"plan. Attempt {rewrite_count}/{max_rewrites}"
+                chapter = self.state.chapters[ch_num - 1]
+                if not chapter.draft:
+                    message = f"Chapter {ch_num} writing produced no draft."
+                    self.state.node_status[
+                        f"writing_{ch_num}"
+                    ] = NodeStatus.FAILED
+                    self.state.last_error = {
+                        "node": f"writing_{ch_num}",
+                        "message": message,
+                    }
+                    self._require_completed(f"writing_{ch_num}")
+
+                contract_violations = chapter.narrative_delta.get(
+                    "contract_violations",
+                    [],
+                )
+                if contract_violations:
+                    feedback = self._format_narrative_contract_feedback(
+                        contract_violations,
+                    )
+                    if self._consume_rewrite(
+                        chapter,
+                        "writing_contract",
+                    ):
+                        attempt = chapter.rewrite_counters[
+                            "writing_contract"
+                        ]
+                        self.state.log(
+                            f"Chapter {ch_num} writing exceeded its "
+                            f"narrative plan. Attempt {attempt}/"
+                            f"{REWRITE_LIMITS['writing_contract']}"
+                        )
+                        self._prepare_chapter_revision(
+                            chapter,
+                            feedback,
+                            source="narrative_contract",
+                            scope="writing",
+                        )
+                        needs_writing = True
+                        needs_polish = True
+                        needs_review = True
+                        self._record_route(
+                            f"writing_{ch_num}",
+                            f"writing_{ch_num}",
+                            "narrative_contract_failed",
+                            rewrite_scope="writing_contract",
+                            rewrite_attempt=attempt,
+                        )
+                        continue
+
+                    node_key = f"narrative_gate_{ch_num}"
+                    message = (
+                        f"Chapter {ch_num} 连续生成了章节规划之外的"
+                        "剧情事实，已达到自动重写上限。"
                     )
                     self._prepare_chapter_revision(
                         chapter,
                         feedback,
                         source="narrative_contract",
-                        preserve_plan=True,
+                        scope="writing",
                     )
-                    self._record_route(
-                        f"writing_{ch_num}",
-                        f"writing_{ch_num}",
-                        "narrative_contract_failed",
-                        rewrite_attempt=rewrite_count,
+                    self._mark_rewrite_limit_failure(
+                        node_key,
+                        message,
+                        source=f"writing_{ch_num}",
+                        reason="narrative_rewrite_limit_reached",
+                        chapter=chapter,
                     )
-                    continue
+                    raise GraphExecutionError(node_key, message)
 
-                node_key = f"narrative_gate_{ch_num}"
-                message = (
-                    f"Chapter {ch_num} 连续生成了章节规划之外的剧情事实，"
-                    f"已达到 {max_rewrites} 次自动重写上限。"
+                needs_writing = False
+                needs_polish = True
+                needs_review = True
+                self._record_route(
+                    f"writing_{ch_num}",
+                    f"style_polish_{ch_num}",
+                    "draft_ready",
+                )
+
+            if needs_polish:
+                self._execute_required_node(
+                    f"style_polish_{ch_num}",
+                    style_polish.run_node,
+                )
+                needs_polish = False
+                needs_review = True
+                self._record_route(
+                    f"style_polish_{ch_num}",
+                    f"consistency_review_{ch_num}",
+                    "polished_draft_ready",
+                )
+
+            if needs_review:
+                self._execute_required_node(
+                    f"consistency_review_{ch_num}",
+                    consistency_review.run_node,
+                )
+                needs_review = False
+
+            chapter = self.state.chapters[ch_num - 1]
+            review = chapter.consistency_report
+            needs_rewrite = (
+                review.get("requires_rewrite", False)
+                if review else False
+            )
+            score = review.get("overall_score", 10) if review else 10
+            narrative_blocked = has_blocking_narrative_violations(review)
+            if not needs_rewrite and not narrative_blocked:
+                if chapter.rewrite_counters.get("total", 0) > 0:
+                    self.state.log(
+                        f"Chapter {ch_num} rewrite complete after "
+                        f"{chapter.rewrite_counters['total']} attempts."
+                    )
+                break
+
+            scope = self._normalize_revision_scope(
+                review.get("rewrite_scope", "writing")
+            )
+            if narrative_blocked and scope == "polish":
+                scope = "writing"
+                self.state.log(
+                    f"Chapter {ch_num} hard narrative gate escalated "
+                    "rewrite scope from polish to writing."
+                )
+            feedback = self._format_review_feedback(review)
+            if self._consume_rewrite(chapter, scope):
+                attempt = chapter.rewrite_counters[scope]
+                self.state.log(
+                    f"Chapter {ch_num} needs {scope} rewrite "
+                    f"(score {score}/10). Attempt {attempt}/"
+                    f"{REWRITE_LIMITS[scope]}"
                 )
                 self._prepare_chapter_revision(
                     chapter,
                     feedback,
-                    source="narrative_contract",
-                    preserve_plan=True,
-                )
-                self.state.node_status[node_key] = NodeStatus.FAILED
-                self.state.last_error = {
-                    "node": node_key,
-                    "message": message,
-                }
-                self.state.workflow_phase = "failed"
-                self.state.pending_gate = None
-                self._record_route(
-                    f"writing_{ch_num}",
-                    node_key,
-                    "narrative_rewrite_limit_reached",
-                    rewrite_attempt=rewrite_count,
-                )
-                raise GraphExecutionError(node_key, message)
-
-            self._record_route(
-                f"writing_{ch_num}",
-                f"consistency_review_{ch_num}",
-                "draft_ready",
-            )
-
-            # Node 6: Consistency Review
-            self._execute_required_node(
-                f"consistency_review_{ch_num}",
-                consistency_review.run_node,
-            )
-
-            # Check if rewrite is needed
-            chapter = self.state.chapters[ch_num - 1]
-            review = chapter.consistency_report
-            needs_rewrite = review.get("requires_rewrite", False) if review else False
-            score = review.get("overall_score", 10) if review else 10
-            narrative_blocked = has_blocking_narrative_violations(review)
-            should_rewrite = needs_rewrite and (
-                score < 6 or narrative_blocked
-            )
-
-            if should_rewrite and rewrite_count < max_rewrites:
-                rewrite_count += 1
-                self.state.log(
-                    f"Chapter {ch_num} needs rewrite (score {score}/10). "
-                    f"Attempt {rewrite_count}/{max_rewrites}"
-                )
-                self._prepare_chapter_revision(
-                    chapter,
-                    self._format_review_feedback(review),
                     source="consistency_review",
+                    scope=scope,
                 )
-                needs_plan = True
+                needs_plan = scope == "plan"
+                needs_writing = scope in {"plan", "writing"}
+                needs_polish = True
+                needs_review = True
+                target = {
+                    "plan": f"chapter_planning_{ch_num}",
+                    "writing": f"writing_{ch_num}",
+                    "polish": f"style_polish_{ch_num}",
+                }[scope]
                 self._record_route(
                     f"consistency_review_{ch_num}",
-                    f"chapter_planning_{ch_num}",
-                    "review_failed",
+                    target,
+                    f"review_{scope}_failed",
                     score=score,
-                    rewrite_attempt=rewrite_count,
+                    rewrite_scope=scope,
+                    rewrite_attempt=attempt,
                 )
                 continue
-            elif narrative_blocked:
-                node_key = f"narrative_gate_{ch_num}"
-                message = (
-                    f"Chapter {ch_num} 仍存在严重叙事逻辑问题，"
-                    f"已达到 {max_rewrites} 次自动重写上限。"
-                )
-                self._prepare_chapter_revision(
-                    chapter,
-                    self._format_review_feedback(review),
-                    source="narrative_gate",
-                )
-                self.state.node_status[node_key] = NodeStatus.FAILED
-                self.state.last_error = {
-                    "node": node_key,
-                    "message": message,
-                }
-                self.state.workflow_phase = "failed"
-                self.state.pending_gate = None
-                self._record_route(
-                    f"consistency_review_{ch_num}",
-                    node_key,
-                    "narrative_rewrite_limit_reached",
-                    score=score,
-                    rewrite_attempt=rewrite_count,
-                )
-                raise GraphExecutionError(node_key, message)
-            else:
-                if rewrite_count > 0:
-                    self.state.log(
-                        f"Chapter {ch_num} rewrite complete after {rewrite_count} attempts."
-                    )
-                self._record_route(
-                    f"consistency_review_{ch_num}",
-                    f"style_polish_{ch_num}",
-                    "review_passed",
-                    score=score,
-                )
-                break
 
-        # Node 7: Style Polish
-        self._execute_required_node(
-            f"style_polish_{ch_num}",
-            style_polish.run_node,
-        )
+            node_prefix = "narrative_gate" if narrative_blocked else "quality_gate"
+            node_key = f"{node_prefix}_{ch_num}"
+            message = (
+                f"Chapter {ch_num} 的 {scope} 修订仍未通过最终审查，"
+                "已达到自动重写上限。"
+            )
+            self._prepare_chapter_revision(
+                chapter,
+                feedback,
+                source=node_prefix,
+                scope=scope,
+            )
+            self._mark_rewrite_limit_failure(
+                node_key,
+                message,
+                source=f"consistency_review_{ch_num}",
+                reason=f"{node_prefix}_rewrite_limit_reached",
+                chapter=chapter,
+                score=score,
+            )
+            raise GraphExecutionError(node_key, message)
 
-        # Node 8 is a persisted Gate. A separate decision resumes the graph.
         chapter = self.state.chapters[ch_num - 1]
         chapter.approval = ApprovalStatus.PENDING
         self.state.node_status[f"human_approval_{ch_num}"] = NodeStatus.IN_PROGRESS
         self.state.pending_gate = f"chapter:{ch_num}"
         self._record_route(
-            f"style_polish_{ch_num}",
+            f"consistency_review_{ch_num}",
             f"human_approval_{ch_num}",
-            "chapter_gate",
+            "final_review_passed",
+            score=chapter.consistency_report.get("overall_score", 0),
         )
         self.state.save()
         self.state.log(
@@ -611,6 +672,7 @@ class GraphNovelEngine:
         ch_num: int,
         approved: bool,
         feedback: str = "",
+        revision_scope: str = "plan",
     ) -> GraphNovelState:
         """Resume the graph from one chapter approval Gate."""
         node_key = f"human_approval_{ch_num}"
@@ -625,10 +687,33 @@ class GraphNovelEngine:
             )
 
         chapter = self.state.chapters[ch_num - 1]
+        if approved and (
+            not chapter.polished_draft
+            or not chapter.consistency_report
+            or chapter.consistency_report.get("requires_rewrite", False)
+            or has_blocking_narrative_violations(
+                chapter.consistency_report,
+            )
+            or self.state.node_status.get(
+                f"consistency_review_{ch_num}"
+            ) != NodeStatus.COMPLETED
+        ):
+            raise GraphExecutionError(
+                node_key,
+                f"Chapter {ch_num} final candidate has not passed review.",
+                code="invalid_transition",
+            )
+
+        normalized_scope = (
+            "none"
+            if approved
+            else self._normalize_revision_scope(revision_scope)
+        )
         chapter.approval = (
             ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
         )
         chapter.human_feedback = feedback.strip()
+        chapter.human_revision_scope = normalized_scope
         self.state.node_status[node_key] = NodeStatus.COMPLETED
         self.state.pending_gate = None
 
@@ -651,13 +736,20 @@ class GraphNovelEngine:
             self._save_outputs()
         else:
             self.state.workflow_phase = "chapter_loop"
+            next_target = {
+                "plan": f"chapter_planning_{ch_num}",
+                "writing": f"writing_{ch_num}",
+                "polish": f"style_polish_{ch_num}",
+            }[normalized_scope]
             self._record_route(
                 node_key,
-                f"chapter_planning_{ch_num}",
-                "rejected",
+                next_target,
+                f"rejected_{normalized_scope}",
+                revision_scope=normalized_scope,
             )
             self.state.log(
-                f"Chapter {ch_num} rejected — feedback saved for rewrite."
+                f"Chapter {ch_num} rejected — {normalized_scope} "
+                "feedback saved."
             )
             self.state.save()
 
@@ -675,6 +767,20 @@ class GraphNovelEngine:
             raise GraphExecutionError(
                 f"chapter_{ch_num}",
                 f"Chapter number must be between 1 and {self.state.total_chapters}.",
+                code="invalid_transition",
+            )
+        if (
+            ch_num > 1
+            and (
+                len(self.state.chapters) < ch_num - 1
+                or self.state.chapters[ch_num - 2].approval
+                != ApprovalStatus.APPROVED
+            )
+        ):
+            raise GraphExecutionError(
+                f"human_approval_{ch_num - 1}",
+                f"Chapter {ch_num - 1} must be approved before "
+                f"generating chapter {ch_num}.",
                 code="invalid_transition",
             )
         if self.state.pending_gate:
@@ -728,14 +834,15 @@ class GraphNovelEngine:
         lines.extend(f"- {violation}" for violation in violations)
         return "\n".join(lines)
 
-    @staticmethod
     def _prepare_chapter_revision(
+        self,
         chapter: Chapter,
         feedback: str,
         source: str,
-        preserve_plan: bool = False,
+        scope: str,
     ) -> None:
-        retained_plan = chapter.plan if preserve_plan else {}
+        if scope not in REVISION_SCOPES:
+            raise ValueError(f"Unsupported revision scope: {scope}")
         if chapter.draft or chapter.polished_draft or chapter.consistency_report:
             chapter.revision_history.append({
                 "revision": chapter.revision_count,
@@ -749,22 +856,126 @@ class GraphNovelEngine:
                 "generation_meta": chapter.generation_meta,
                 "narrative_delta": chapter.narrative_delta,
                 "human_feedback": chapter.human_feedback,
+                "revision_scope": scope,
+                "rewrite_counters": dict(chapter.rewrite_counters),
             })
             chapter.revision_count += 1
 
         chapter.rewrite_feedback = feedback
-        chapter.plan = retained_plan
-        chapter.draft = ""
-        chapter.polished_draft = ""
+        chapter.human_revision_scope = scope
         chapter.consistency_report = {}
-        chapter.generation_meta = {}
-        chapter.narrative_delta = {}
-        chapter.word_count = 0
-        chapter.chapter_hook = ""
-        chapter.shuangdian_type = ""
+        if scope in {"plan", "writing"}:
+            if scope == "plan":
+                chapter.plan = {}
+            chapter.draft = ""
+            chapter.polished_draft = ""
+            chapter.generation_meta = {}
+            chapter.narrative_delta = {}
+            chapter.word_count = 0
+            chapter.chapter_hook = ""
+            chapter.shuangdian_type = ""
+        else:
+            current_candidate = chapter.polished_draft or chapter.draft
+            chapter.word_count = len(current_candidate.replace(" ", ""))
         chapter.approval = ApprovalStatus.PENDING
         chapter.human_feedback = ""
         chapter.side_effects_committed = False
+
+        invalidated_nodes = {
+            "plan": (
+                "chapter_planning",
+                "writing",
+                "style_polish",
+                "consistency_review",
+            ),
+            "writing": (
+                "writing",
+                "style_polish",
+                "consistency_review",
+            ),
+            "polish": (
+                "style_polish",
+                "consistency_review",
+            ),
+        }[scope]
+        for node_name in invalidated_nodes:
+            self.state.node_status[
+                f"{node_name}_{chapter.chapter_number}"
+            ] = NodeStatus.PENDING
+
+    @staticmethod
+    def _normalize_revision_scope(scope: str) -> str:
+        if scope not in REVISION_SCOPES:
+            raise GraphExecutionError(
+                "chapter_revision",
+                "revision_scope must be plan, writing, or polish.",
+                code="invalid_transition",
+            )
+        return scope
+
+    @staticmethod
+    def _reset_rewrite_counters(chapter: Chapter) -> None:
+        chapter.rewrite_counters = {
+            **{scope: 0 for scope in REWRITE_LIMITS},
+            "total": 0,
+        }
+
+    @staticmethod
+    def _ensure_rewrite_counters(chapter: Chapter) -> None:
+        for scope in REWRITE_LIMITS:
+            chapter.rewrite_counters.setdefault(scope, 0)
+        chapter.rewrite_counters.setdefault(
+            "total",
+            sum(
+                chapter.rewrite_counters.get(scope, 0)
+                for scope in REWRITE_LIMITS
+            ),
+        )
+
+    def _node_requires_run(self, node_key: str, has_output: bool) -> bool:
+        if not has_output:
+            return True
+        return self.state.node_status.get(node_key) in {
+            NodeStatus.PENDING,
+            NodeStatus.IN_PROGRESS,
+            NodeStatus.FAILED,
+            NodeStatus.SKIPPED,
+        }
+
+    @staticmethod
+    def _consume_rewrite(chapter: Chapter, scope: str) -> bool:
+        limit = REWRITE_LIMITS[scope]
+        current = chapter.rewrite_counters.get(scope, 0)
+        total = chapter.rewrite_counters.get("total", 0)
+        if current >= limit or total >= MAX_TOTAL_REWRITES:
+            return False
+        chapter.rewrite_counters[scope] = current + 1
+        chapter.rewrite_counters["total"] = total + 1
+        return True
+
+    def _mark_rewrite_limit_failure(
+        self,
+        node_key: str,
+        message: str,
+        source: str,
+        reason: str,
+        chapter: Chapter,
+        **details,
+    ) -> None:
+        self.state.node_status[node_key] = NodeStatus.FAILED
+        self.state.last_error = {
+            "node": node_key,
+            "message": message,
+        }
+        self.state.workflow_phase = "failed"
+        self.state.pending_gate = None
+        self._record_route(
+            source,
+            node_key,
+            reason,
+            rewrite_counters=dict(chapter.rewrite_counters),
+            **details,
+        )
 
     def _commit_chapter_side_effects(self, ch_num: int) -> None:
         chapter = self.state.chapters[ch_num - 1]

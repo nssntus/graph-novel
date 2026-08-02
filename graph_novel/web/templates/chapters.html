@@ -34,7 +34,7 @@
 
   <!-- Chapter Grid -->
   <div class="grid grid-3 mt-2">
-    {% for ch_num in range(1, state.total_chapters + 1) %}
+    {% for ch_num in chapter_numbers %}
       {% set ch = state.chapters[ch_num - 1] if ch_num <= state.chapters|length else None %}
       <div class="card" id="chapter-card-{{ ch_num }}">
         <div class="flex justify-between items-center">
@@ -72,13 +72,27 @@
             <button class="btn btn-sm" onclick="viewChapter({{ ch_num }})">
               阅读
             </button>
-          {% elif ch and ch.polished_draft and ch.approval.value == "pending" %}
+          {% elif ch and ch.polished_draft and ch.approval.value == "pending" and state.pending_gate == "chapter:" ~ ch_num %}
             <button class="btn btn-primary btn-sm" onclick="viewChapter({{ ch_num }})">
               审批
             </button>
-          {% else %}
+          {% elif ch_num == next_writable_chapter and not state.pending_gate %}
             <button class="btn btn-primary btn-sm chapter-run-btn" onclick="runChapter({{ ch_num }})">
-              {{ "按反馈重写" if ch and ch.approval.value == "rejected" else "写这章" }}
+              {% if ch and ch.approval.value == "rejected" %}
+                按反馈重写
+              {% elif ch and (ch.draft or ch.polished_draft) %}
+                继续生成
+              {% else %}
+                写这章
+              {% endif %}
+            </button>
+          {% else %}
+            <button class="btn btn-sm" disabled>
+              {% if next_writable_chapter %}
+                需先完成第{{ next_writable_chapter }}章
+              {% else %}
+                暂不可生成
+              {% endif %}
             </button>
           {% endif %}
         </div>
@@ -88,11 +102,35 @@
     {% endfor %}
   </div>
 
+  {% if total_pages > 1 %}
+  <nav class="pagination mt-2" aria-label="章节分页">
+    {% if current_page > 1 %}
+      <a class="btn btn-sm" href="?page={{ current_page - 1 }}">上一页</a>
+    {% endif %}
+    {% for page_number in range(1, total_pages + 1) %}
+      {% if page_number == current_page %}
+        <span class="btn btn-sm pagination-current" aria-current="page">{{ page_number }}</span>
+      {% else %}
+        <a class="btn btn-sm" href="?page={{ page_number }}">{{ page_number }}</a>
+      {% endif %}
+    {% endfor %}
+    {% if current_page < total_pages %}
+      <a class="btn btn-sm" href="?page={{ current_page + 1 }}">下一页</a>
+    {% endif %}
+  </nav>
+  {% endif %}
+
   <!-- Run Next Remaining -->
   <div class="card text-center mt-2" style="padding: 2rem;" id="run-all-section">
     <h3>生成下一待写章节</h3>
-    <p class="muted mb-2">运行一章完整管线（规划→写作→毒舌审稿→润色），到人工审批点后暂停。</p>
-    <button class="btn btn-primary" onclick="runAllChapters()" id="run-all-btn">
+    <p class="muted mb-2">
+      {% if next_writable_chapter %}
+        下一可写：第{{ next_writable_chapter }}章。运行完整管线后会在人工审批点暂停。
+      {% else %}
+        所有章节已完成。
+      {% endif %}
+    </p>
+    <button class="btn btn-primary" onclick="runAllChapters()" id="run-all-btn"{% if not next_writable_chapter or state.pending_gate %} disabled{% endif %}>
       生成下一章
     </button>
     <div id="run-all-status" class="mt-2"></div>
@@ -108,12 +146,12 @@
 
 <!-- Chapter View Modal -->
 <div id="chapter-modal" style="display:none; position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5); z-index:1000; overflow-y:auto;">
-  <div style="max-width:800px; margin:2rem auto; background:var(--card-bg); border-radius:var(--radius); padding:2rem;">
-    <div class="flex justify-between items-center mb-2">
+  <div class="chapter-modal-panel">
+    <div class="flex justify-between items-center mb-2 chapter-modal-header">
       <h2 id="modal-title"></h2>
-      <div class="flex gap-1">
+      <div class="flex gap-1 chapter-modal-actions">
         <span id="modal-meta" class="muted" style="font-size:0.8rem;"></span>
-        <button class="btn btn-sm" onclick="closeModal()">✕ 关闭</button>
+        <button class="btn btn-sm" onclick="closeModal()" aria-label="关闭" title="关闭">✕</button>
       </div>
     </div>
     <div id="modal-content" class="prose"></div>
@@ -121,6 +159,23 @@
       <div class="form-group">
         <label>审批意见</label>
         <textarea id="modal-feedback" rows="2" placeholder="这里写反馈……或者直接留空=通过"></textarea>
+      </div>
+      <div class="form-group" id="modal-revision-scope">
+        <label>驳回后处理</label>
+        <div class="segmented-control">
+          <label class="segmented-option">
+            <input type="radio" name="revision-scope" value="polish">
+            <span>轻改文字</span>
+          </label>
+          <label class="segmented-option">
+            <input type="radio" name="revision-scope" value="writing" checked>
+            <span>重写正文</span>
+          </label>
+          <label class="segmented-option">
+            <input type="radio" name="revision-scope" value="plan">
+            <span>重做规划</span>
+          </label>
+        </div>
       </div>
       <div class="flex gap-1">
         <button class="btn btn-success btn-sm" onclick="approveFromModal(true)" id="modal-approve-btn">✓ 通过</button>
@@ -133,7 +188,8 @@
 
 <script src="/static/task.js"></script>
 <script>
-const projectId = "{{ project_id }}";
+const projectId = {{ project_id|tojson }};
+const nextWritableChapter = {{ next_writable_chapter|tojson }};
 let currentViewChapter = 0;
 
 function setChapterRunning(running) {
@@ -153,7 +209,7 @@ async function monitorChapterTask(taskId, chNum) {
     renderProjectTaskStatus(banner, payload);
     if (status && payload.status === 'running') {
       status.innerHTML = '<p class="muted">当前节点：'
-        + (payload.current_node_label || '初始化') + '</p>';
+        + escapeHtml(payload.current_node_label || '初始化') + '</p>';
     }
   });
 
@@ -169,8 +225,10 @@ async function monitorChapterTask(taskId, chNum) {
   return false;
 }
 
-async function runChapter(chNum) {
-  const status = document.getElementById(`chapter-status-${chNum}`);
+async function runChapter(chNum, statusOverride) {
+  const status = statusOverride
+    || document.getElementById(`chapter-status-${chNum}`)
+    || document.getElementById('run-all-status');
   setChapterRunning(true);
   status.innerHTML = '<span class="spinner"></span> <span class="muted">正在启动第' + chNum + '章后台任务……</span>';
 
@@ -181,12 +239,12 @@ async function runChapter(chNum) {
     if (resp.status === 202 && data.success) {
       return await monitorChapterTask(data.task.id, chNum);
     } else {
-      status.innerHTML = '<p class="alert alert-error">启动失败：' + (data.error || '未知错误') + '</p>';
+      status.innerHTML = '<p class="alert alert-error">启动失败：' + escapeHtml(data.error || '未知错误') + '</p>';
       setChapterRunning(false);
       return false;
     }
   } catch (err) {
-    status.innerHTML = '<p class="alert alert-error">连接错误：' + err.message + '</p>';
+    status.innerHTML = '<p class="alert alert-error">连接错误：' + escapeHtml(err.message) + '</p>';
     setChapterRunning(false);
     return false;
   }
@@ -208,7 +266,7 @@ async function resumeChapterTask() {
     }
   } catch (err) {
     document.getElementById('project-task-status').innerHTML =
-      '<p class="alert alert-error">状态读取失败：' + err.message + '</p>';
+      '<p class="alert alert-error">状态读取失败：' + escapeHtml(err.message) + '</p>';
   }
 }
 
@@ -220,7 +278,7 @@ async function viewChapter(chNum) {
     if (data.number) {
       document.getElementById('modal-title').textContent = '第' + chNum + '章：' + data.title;
       document.getElementById('modal-meta').textContent = (data.word_count || 0) + '字';
-      document.getElementById('modal-content').innerHTML = formatProse(data.polished || data.draft);
+      renderProse(data.polished || data.draft);
       document.getElementById('chapter-modal').style.display = 'block';
       if (data.approval === 'pending') {
         document.getElementById('modal-approval').style.display = 'block';
@@ -236,25 +294,39 @@ async function viewChapter(chNum) {
 async function approveFromModal(approved) {
   const status = document.getElementById('modal-approval-status');
   const feedback = document.getElementById('modal-feedback').value;
+  const selectedScope = document.querySelector(
+    'input[name="revision-scope"]:checked'
+  );
+  const revisionScope = selectedScope ? selectedScope.value : 'writing';
   try {
     const resp = await fetch('/api/' + projectId + '/approve-chapter/' + currentViewChapter, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ approved, feedback })
+      body: JSON.stringify({
+        approved,
+        feedback,
+        revision_scope: revisionScope
+      })
     });
     const data = await resp.json();
     if (data.success) {
+      const scopeLabels = {
+        polish: '轻改文字',
+        writing: '重写正文',
+        plan: '重做规划'
+      };
       status.innerHTML = approved
         ? '<p class="alert alert-success">第' + currentViewChapter + '章已通过！</p>'
-        : '<p class="alert alert-error">第' + currentViewChapter + '章已驳回，需要重写。</p>';
+        : '<p class="alert alert-error">第' + currentViewChapter
+          + '章已驳回：' + scopeLabels[revisionScope] + '。</p>';
       document.getElementById('modal-approval').style.display = 'none';
       setTimeout(closeModal, 1500);
       setTimeout(function(){ location.reload(); }, 2000);
     } else {
-      status.innerHTML = '<p class="alert alert-error">' + (data.error || '审批失败') + '</p>';
+      status.innerHTML = '<p class="alert alert-error">' + escapeHtml(data.error || '审批失败') + '</p>';
     }
   } catch (err) {
-    status.innerHTML = '<p class="alert alert-error">错误：' + err.message + '</p>';
+    status.innerHTML = '<p class="alert alert-error">错误：' + escapeHtml(err.message) + '</p>';
   }
 }
 
@@ -262,21 +334,15 @@ async function runAllChapters() {
   const status = document.getElementById('run-all-status');
   const btn = document.getElementById('run-all-btn');
   btn.disabled = true;
-  for (let chNum = 1; chNum <= {{ state.total_chapters }}; chNum++) {
-    const chCard = document.getElementById('chapter-card-' + chNum);
-    if (!chCard) continue;
-    const badge = chCard.querySelector('.badge');
-    if (badge && (badge.textContent.trim() === '待写' || badge.textContent.trim() === '待重写')) {
-      status.innerHTML = '<p class="muted"><span class="spinner"></span> 正在写第' + chNum + '章……</p>';
-      const generated = await runChapter(chNum);
-      status.innerHTML = generated
-        ? '<p class="alert alert-success">本章已生成，请审批后再继续下一章。</p>'
-        : '<p class="alert alert-error">本章生成失败，请查看章节错误。</p>';
-      btn.disabled = false;
-      return;
-    }
+  if (nextWritableChapter === null) {
+    status.innerHTML = '<p class="alert alert-success">没有待生成的章节。</p>';
+    return;
   }
-  status.innerHTML = '<p class="alert alert-success">没有待生成的章节。</p>';
+  status.innerHTML = '<p class="muted"><span class="spinner"></span> 正在写第' + nextWritableChapter + '章……</p>';
+  const generated = await runChapter(nextWritableChapter, status);
+  status.innerHTML = generated
+    ? '<p class="alert alert-success">本章已生成，请审批后再继续下一章。</p>'
+    : '<p class="alert alert-error">本章生成失败，请查看章节错误。</p>';
   btn.disabled = false;
 }
 
@@ -284,16 +350,22 @@ function closeModal() {
   document.getElementById('chapter-modal').style.display = 'none';
 }
 
-function formatProse(text) {
-  if (!text) return '<p>暂无内容。</p>';
-  return text
+function renderProse(text) {
+  const container = document.getElementById('modal-content');
+  container.replaceChildren();
+  const paragraphs = (text || '暂无内容。')
     .split('\n\n')
-    .filter(function(p){ return p.trim(); })
-    .map(function(p){
-      if (p.trim() === '***') return '<p style="text-align:center;color:var(--text-secondary);">✦ ✦ ✦</p>';
-      return '<p>' + p + '</p>';
-    })
-    .join('');
+    .filter(function(value){ return value.trim(); });
+  paragraphs.forEach(function(value) {
+    const paragraph = document.createElement('p');
+    if (value.trim() === '***') {
+      paragraph.className = 'scene-break';
+      paragraph.textContent = '✦ ✦ ✦';
+    } else {
+      paragraph.textContent = value;
+    }
+    container.appendChild(paragraph);
+  });
 }
 
 document.addEventListener('DOMContentLoaded', resumeChapterTask);

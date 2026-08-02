@@ -14,6 +14,7 @@ from graph_novel.output_contracts import (
 )
 from graph_novel.narrative import (
     build_narrative_context,
+    commit_continuity_checkpoint,
     commit_narrative_delta,
     validate_narrative_delta,
 )
@@ -31,6 +32,9 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的签约作者。你写快节�
 
 【内容要求】
 - 前300字必须出冲突/钩子——读者3秒决定去留
+- 前300字必须执行章节规划中的 opening_bridge，先承接上一章结束现场，再推进本章冲突
+- 不得跳过 opening_bridge 中的过渡步骤；时间、地点或在场角色改变时必须写出移动、等待、到场或交接过程
+- 不得用“此前已准备”“早就知道”等一句话补丁替代正文铺垫
 - 对话要有"网感"：口语化、有情绪、有节奏
 - 主角说话要符合人设（毒舌/冷静/热血/腹黑）
 - 避免长段设定说明——把世界观揉进对话和动作里
@@ -76,13 +80,38 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的签约作者。你写快节�
     "character_locations": {},
     "character_conditions": {},
     "resources": {}
+  },
+  "continuity_checkpoint": {
+    "last_scene": {
+      "time": "本章最后场景的时间",
+      "location": "本章最后场景的地点",
+      "pov_character": "本章结尾视角角色",
+      "characters_present": ["结尾仍在场的角色"],
+      "final_action": "正文最后发生的动作",
+      "final_dialogue": "正文最后一句对话，没有则为空字符串"
+    },
+    "active_goals": [{
+      "character": "角色名",
+      "goal": "章末仍在执行的目标",
+      "next_action": "下一步尚未完成的动作"
+    }],
+    "unresolved_actions": ["本章已经启动但尚未完成的动作"],
+    "open_threads": [{
+      "thread_id": "稳定的线索ID",
+      "description": "仍待处理的线索或危险",
+      "urgency": "high/medium/low"
+    }],
+    "relationship_changes": {"角色关系": "本章实际发生的变化"}
   }
 }
 
 facts_established 必须逐项复制章节规划中的 planned_facts，不得新增、改名或遗漏。
 knowledge_changes 只能记录章节规划中 information_flow 已经声明的变化。
+knowledge_changes.source_character 仅在 source_type=told 时填写角色名，其他类型输出空字符串，禁止输出 null。
 如果正文创作时想到规划外的新身份、组织、能力、物品或幕后关系，删除该内容，不要写入正文或 META。
 角色不能凭空获得信息，也不能把怀疑直接写成确认。
+continuity_checkpoint 必须忠实记录正文最后一个场景，供下一章直接承接；
+不得记录正文尚未发生的动作，也不得用计划中的预期结尾代替实际结尾。
 请写出完整的章节正文（2000-2500字），然后附上 META 数据。"""
 
 
@@ -96,8 +125,6 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
     character_text = _character_context(state)
     prev_text = _previous_summary(state)
     fs_text = _foreshadowing_context(state, ch_num)
-    narrative_context = build_narrative_context(state)
-
     outline = chapter.outline
     if chapter.plan:
         plan_text = json.dumps(
@@ -132,6 +159,12 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
             indent=2,
         )
 
+    narrative_context = build_narrative_context(
+        state,
+        chapter_number=ch_num,
+        focus_text=plan_text,
+    )
+
     user_prompt = f"""请写第{ch_num}章正文。
 
 == 章节规划 ==
@@ -142,6 +175,8 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 
 facts_established 必须与白名单完全一致；knowledge_changes 不得超出白名单。
 白名单外的剧情设定必须从正文和 META 中删除。
+章节开头必须逐步执行 chapter_plan.opening_bridge，并在前300字完成承接。
+immediate_predecessor.ending_excerpt 是上一章批准正文的精确结尾，优先级高于概括性摘要。
 
 == 世界设定 ==
 {world_text}
@@ -155,7 +190,7 @@ facts_established 必须与白名单完全一致；knowledge_changes 不得超�
 == 伏笔追踪 ==
 {fs_text}
 
-== 已批准的叙事事实、角色认知与连续性状态 ==
+== 分层章节上下文（immediate_predecessor 必须优先承接）==
 {narrative_context}
 
 == 本轮重写反馈 ==
@@ -193,6 +228,7 @@ facts_established 必须与白名单完全一致；knowledge_changes 不得超�
             "facts_established": meta["facts_established"],
             "knowledge_changes": meta["knowledge_changes"],
             "continuity_changes": meta["continuity_changes"],
+            "continuity_checkpoint": meta["continuity_checkpoint"],
         }
         if contract_violations:
             chapter.narrative_delta[
@@ -230,6 +266,7 @@ def commit_generation_meta(state: GraphNovelState, ch_num: int) -> None:
     _update_foreshadowing(state, meta, ch_num)
     _update_arcs(state, meta, ch_num)
     commit_narrative_delta(state, ch_num, chapter.narrative_delta)
+    commit_continuity_checkpoint(chapter)
 
 
 def _update_foreshadowing(state: GraphNovelState, meta: dict, ch_num: int) -> None:

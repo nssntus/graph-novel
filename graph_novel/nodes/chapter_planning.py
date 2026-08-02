@@ -32,6 +32,9 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的章节规划师。在每章�
 - title: 章标题（有网感）
 - scene_plan: 场景计划 [{scene_number, setting, characters_present, action, emotional_beat, dialogue_focus, word_count_target}]
 - pov_character: POV角色
+- opening_bridge: 从上一章精确结尾到本章第一场的交接：
+  {previous_chapter, inherited_endpoint, transition_steps, first_scene_start, carry_over_threads}
+  transition_steps 至少一项；直接承接也要明确写“无跳时，直接承接”。
 - opening_hook: 开篇钩子（本章前300字怎么抓人）
 - closing_hook: 章末钩子（怎么让读者必须点下一章）
 - dialogue_highlights: 本章对话亮点（至少1个高燃/高虐/反转对话场景）
@@ -43,6 +46,7 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的章节规划师。在每章�
 - information_flow: 按发生顺序列出本章角色认知变化，每条包含：
   {fact_id, character, knowledge_level(heard/suspected/inferred/confirmed),
    source_type(observed/told/inferred/public/document), source_character, evidence}
+  source_character 仅在 source_type=told 时填写角色名，其他类型必须输出空字符串，禁止输出 null
 - continuity_notes: 承接上文
   {time, character_locations, character_conditions, resources, previous_chapter_end}
 - ai_taboos_check: 本章要避免的AI病（列出3个具体要避开的AI写作禁忌）
@@ -52,6 +56,9 @@ SYSTEM_PROMPT = """你是一位番茄小说平台的章节规划师。在每章�
 - “怀疑/推断”不能无铺垫升级为“确认”
 - 新事件必须能在 causal_chain 中找到前置原因
 - 不得为了推进大纲而覆盖已批准的事实、位置、伤势或资源状态
+- opening_bridge 必须逐项承接 immediate_predecessor，不能跳过上一章最后动作、对白或即时威胁
+- 时间、地点、在场角色发生变化时，transition_steps 必须交代移动、等待或到场过程
+- “提前准备/早已知道/已经完成”必须有前章事实或本章先发生的场景支持
 
 请只输出 JSON 对象，不要其他文字。"""
 
@@ -67,8 +74,12 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 
     prev_context = _build_previous_context(state)
     arc_text = _build_arc_status_text(state)
-    narrative_context = build_narrative_context(state)
     outline_text = json.dumps(_serialize_outline(outline), ensure_ascii=False, indent=2) if outline else "无大纲。"
+    narrative_context = build_narrative_context(
+        state,
+        chapter_number=ch_num,
+        focus_text=outline_text,
+    )
 
     # 爽点排期上下文
     shuangdian_context = ""
@@ -94,7 +105,7 @@ def run_node(state: GraphNovelState) -> GraphNovelState:
 角色弧线状态：
 {arc_text}
 
-已批准的叙事事实、角色认知与连续性状态：
+分层章节上下文（immediate_predecessor 必须优先承接）：
 {narrative_context}
 
 本轮重写反馈：

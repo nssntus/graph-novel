@@ -271,10 +271,35 @@ def chapter_plan_contract(
     state_validator: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> ResponseContract:
     def validate(value: Dict[str, Any]) -> None:
+        _normalize_optional_source_characters(
+            value.get("information_flow", []),
+        )
         _validate_schema(value, CHAPTER_PLAN_SCHEMA, path="chapter_plan")
         if value["chapter_number"] != expected_chapter:
             raise OutputContractError(
                 f"chapter_plan.chapter_number 应为 {expected_chapter}"
+            )
+        bridge = value["opening_bridge"]
+        expected_previous = max(0, expected_chapter - 1)
+        if bridge["previous_chapter"] != expected_previous:
+            raise OutputContractError(
+                "chapter_plan.opening_bridge.previous_chapter 应为 "
+                f"{expected_previous}"
+            )
+        if not bridge["inherited_endpoint"].strip():
+            raise OutputContractError(
+                "chapter_plan.opening_bridge.inherited_endpoint 不能为空"
+            )
+        if not bridge["first_scene_start"].strip():
+            raise OutputContractError(
+                "chapter_plan.opening_bridge.first_scene_start 不能为空"
+            )
+        if not bridge["transition_steps"] or any(
+            not step.strip() for step in bridge["transition_steps"]
+        ):
+            raise OutputContractError(
+                "chapter_plan.opening_bridge.transition_steps "
+                "至少需要一个非空过渡步骤"
             )
         if not value["causal_chain"]:
             raise OutputContractError(
@@ -441,6 +466,13 @@ CHAPTER_PLAN_SCHEMA = {
         "word_count_target": int,
     }],
     "pov_character": str,
+    "opening_bridge": {
+        "previous_chapter": int,
+        "inherited_endpoint": str,
+        "transition_steps": [str],
+        "first_scene_start": str,
+        "carry_over_threads": [str],
+    },
     "opening_hook": str,
     "closing_hook": str,
     "dialogue_highlights": [str],
@@ -490,8 +522,11 @@ CONSISTENCY_REVIEW_SCHEMA = {
     "ai_disease_count": int,
     "dialogue_ratio_estimate": str,
     "requires_rewrite": bool,
+    "rewrite_scope": str,
     "logic_gate_passed": bool,
+    "bridge_gate_passed": bool,
     "narrative_audit": {
+        "chapter_bridge": str,
         "causality": str,
         "knowledge_provenance": str,
         "continuity": str,
@@ -586,6 +621,28 @@ WRITING_META_SCHEMA = {
         "character_conditions": dict,
         "resources": dict,
     },
+    "continuity_checkpoint": {
+        "last_scene": {
+            "time": str,
+            "location": str,
+            "pov_character": str,
+            "characters_present": [str],
+            "final_action": str,
+            "final_dialogue": str,
+        },
+        "active_goals": [{
+            "character": str,
+            "goal": str,
+            "next_action": str,
+        }],
+        "unresolved_actions": [str],
+        "open_threads": [{
+            "thread_id": str,
+            "description": str,
+            "urgency": str,
+        }],
+        "relationship_changes": dict,
+    },
 }
 
 
@@ -642,6 +699,21 @@ def _validate_consistency_review(value: Dict[str, Any]) -> None:
         raise OutputContractError(
             "consistency_review 低于 6 分时 requires_rewrite 必须为 true"
         )
+    rewrite_scope = value["rewrite_scope"]
+    valid_rewrite_scopes = {"none", "plan", "writing", "polish"}
+    if rewrite_scope not in valid_rewrite_scopes:
+        raise OutputContractError(
+            "consistency_review.rewrite_scope 必须是 "
+            "none、plan、writing 或 polish"
+        )
+    if value["requires_rewrite"] and rewrite_scope == "none":
+        raise OutputContractError(
+            "consistency_review 要求重写时 rewrite_scope 不能为 none"
+        )
+    if not value["requires_rewrite"] and rewrite_scope != "none":
+        raise OutputContractError(
+            "consistency_review 无需重写时 rewrite_scope 必须为 none"
+        )
     for key, audit in value["narrative_audit"].items():
         if not audit.strip():
             raise OutputContractError(
@@ -657,11 +729,40 @@ def _validate_consistency_review(value: Dict[str, Any]) -> None:
             "consistency_review 存在严重叙事违规时 logic_gate_passed 必须为 false"
         )
     if (
-        (blocking_violation or not value["logic_gate_passed"])
+        (
+            blocking_violation
+            or not value["logic_gate_passed"]
+            or not value["bridge_gate_passed"]
+        )
         and not value["requires_rewrite"]
     ):
         raise OutputContractError(
             "consistency_review 逻辑门未通过时 requires_rewrite 必须为 true"
+        )
+    if (
+        (
+            blocking_violation
+            or not value["logic_gate_passed"]
+            or not value["bridge_gate_passed"]
+        )
+        and rewrite_scope == "polish"
+    ):
+        raise OutputContractError(
+            "consistency_review 逻辑门或章节衔接门未通过时 "
+            "rewrite_scope 至少必须为 writing"
+        )
+    if not value["bridge_gate_passed"] and value["logic_gate_passed"]:
+        raise OutputContractError(
+            "consistency_review 章节衔接门未通过时 "
+            "logic_gate_passed 必须为 false"
+        )
+    if not value["bridge_gate_passed"] and not any(
+        item["category"].strip().lower()
+        in {"章节衔接", "chapter_bridge", "chapter bridge"}
+        for item in value["narrative_violations"]
+    ):
+        raise OutputContractError(
+            "consistency_review 章节衔接门未通过时必须记录章节衔接违规"
         )
     if value["ai_disease_count"] < 0:
         raise OutputContractError(
@@ -707,11 +808,26 @@ def _validate_global_review(value: Dict[str, Any]) -> None:
 
 
 def _validate_writing_meta(value: Dict[str, Any]) -> None:
+    _normalize_optional_source_characters(
+        value.get("knowledge_changes", []),
+    )
     _validate_schema(value, WRITING_META_SCHEMA, path="writing_meta")
     if not value["chapter_hook"].strip():
         raise OutputContractError("writing_meta.chapter_hook 不能为空")
     if not value["chapter_summary"].strip():
         raise OutputContractError("writing_meta.chapter_summary 不能为空")
+    last_scene = value["continuity_checkpoint"]["last_scene"]
+    for key in ("time", "location", "pov_character", "final_action"):
+        if not last_scene[key].strip():
+            raise OutputContractError(
+                "writing_meta.continuity_checkpoint.last_scene"
+                f".{key} 不能为空"
+            )
+    if not last_scene["characters_present"]:
+        raise OutputContractError(
+            "writing_meta.continuity_checkpoint.last_scene"
+            ".characters_present 不能为空"
+        )
     for name, moment in value["character_moments"].items():
         _require_type(name, str, path="writing_meta.character_moments key")
         _require_type(
@@ -719,6 +835,20 @@ def _validate_writing_meta(value: Dict[str, Any]) -> None:
             str,
             path=f"writing_meta.character_moments[{name}]",
         )
+
+
+def _normalize_optional_source_characters(
+    items: Any,
+) -> None:
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if (
+            isinstance(item, dict)
+            and "source_character" in item
+            and item["source_character"] is None
+        ):
+            item["source_character"] = ""
 
 
 WORLD_SETTING_CONTRACT = ResponseContract(
