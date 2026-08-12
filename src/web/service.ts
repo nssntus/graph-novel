@@ -216,7 +216,7 @@ export class GraphNovelService {
     if (await this.checkpoints.load(projectId)) {
       throw new ServiceError(409, "exists", "项目 ID 已存在");
     }
-    const targetTotalChapters = boundedInteger(input.targetTotalChapters ?? 12, 1, 200, "targetTotalChapters");
+    const targetTotalChapters = boundedInteger(input.targetTotalChapters ?? 12, 1, Number.MAX_SAFE_INTEGER, "targetTotalChapters");
     const targetTotalWords = boundedInteger(input.targetTotalWords ?? 0, 0, 20_000_000, "targetTotalWords");
     const state = createInitialState(projectId, title);
     state.creativeGenre = optionalText(input.creativeGenre);

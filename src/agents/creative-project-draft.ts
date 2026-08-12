@@ -63,7 +63,7 @@ export function parseCreativeProjectDraft(text: string): CreativeProjectDraft {
     creativePremise: boundedText(record.creativePremise, "creativePremise", 2000),
     creativeTheme: boundedText(record.creativeTheme, "creativeTheme", 200),
     creativeNotes: boundedText(record.creativeNotes, "creativeNotes", 4000),
-    targetTotalChapters: boundedInteger(record.targetTotalChapters, "targetTotalChapters", 12, 1, 200),
+    targetTotalChapters: boundedInteger(record.targetTotalChapters, "targetTotalChapters", 12, 1, Number.MAX_SAFE_INTEGER),
     targetTotalWords: boundedInteger(record.targetTotalWords, "targetTotalWords", 0, 0, 20_000_000),
   };
 }
@@ -76,7 +76,7 @@ function buildSystemPrompt(): string {
 - 只输出 JSON 对象，字段只能使用 novelTitle、creativeGenre、creativePremise、creativeTheme、creativeNotes、targetTotalChapters、targetTotalWords。
 - 不确定的文本字段输出空字符串；没有可靠依据的数字使用 targetTotalChapters=12、targetTotalWords=0。
 - novelTitle、creativeGenre、creativeTheme 是简洁文本；creativePremise 描述主角、核心冲突和持续阅读体验；creativeNotes 保留重要约束和偏好。
-- targetTotalChapters 必须是 1-200 的整数，targetTotalWords 必须是 0-20000000 的整数。
+- targetTotalChapters 必须是正的安全整数，targetTotalWords 必须是 0-20000000 的整数。
 - 不要输出 projectId、creativeCharter、worldSetting、characters、chapterPlans 或任何 GraphNovelState 字段。`;
 }
 

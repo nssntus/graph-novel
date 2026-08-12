@@ -64,7 +64,7 @@ test("creative project draft parser keeps the whitelist and applies numeric defa
     creativePremise: "主角回到灾变前三天，必须让证据和行动逐步形成因果。",
     creativeTheme: "信任与生存选择",
     creativeNotes: "避免无代价全知。",
-    targetTotalChapters: 120,
+    targetTotalChapters: 400,
     unknownGraphField: { projectId: "must not leak" },
   }));
   assert.deepEqual(draft, {
@@ -73,7 +73,7 @@ test("creative project draft parser keeps the whitelist and applies numeric defa
     creativePremise: "主角回到灾变前三天，必须让证据和行动逐步形成因果。",
     creativeTheme: "信任与生存选择",
     creativeNotes: "避免无代价全知。",
-    targetTotalChapters: 120,
+    targetTotalChapters: 400,
     targetTotalWords: 0,
   });
 });
@@ -121,6 +121,14 @@ test("project draft API validates history, returns a temporary whitelist draft, 
   assert.equal(assistantOnly.status, 400);
   const tooMany = await request(baseUrl, "/api/creative/project-draft", { history: Array.from({ length: 21 }, () => ({ role: "user", content: "想法" })) });
   assert.equal(tooMany.status, 400);
+});
+
+test("project creation accepts chapter targets above the former 200 chapter limit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-project-target-"));
+  const service = new GraphNovelService(new CheckpointStore(root));
+  const state = await service.createProject({ projectId: "four-hundred", novelTitle: "四百章测试", targetTotalChapters: 400, targetTotalWords: 1_000_000 });
+  assert.equal(state.targetTotalChapters, 400);
+  assert.equal(state.targetTotalWords, 1_000_000);
 });
 
 test("project draft API distinguishes malformed output and unavailable Agent", async (t) => {
