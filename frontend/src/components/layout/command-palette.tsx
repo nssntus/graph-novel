@@ -1,0 +1,11 @@
+import { useEffect, useState } from "react";
+import { Bot, BookOpen, FolderKanban, Library, Search } from "lucide-react";
+import { Button } from "../ui/button";
+import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "../ui/command";
+
+export function CommandPalette({ projectId, onChat }: { projectId?: string | null; onChat?: () => void }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => { const onKey = (event: KeyboardEvent) => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setOpen((value) => !value); } }; window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey); }, []);
+  const go = (path: string) => { setOpen(false); window.history.pushState({}, "", path); window.dispatchEvent(new PopStateEvent("popstate")); };
+  return <><Button variant="outline" size="sm" className="hidden min-w-48 justify-between text-muted-foreground md:flex" onClick={() => setOpen(true)}><span className="flex items-center gap-2"><Search data-icon="inline-start" />快速跳转</span><kbd className="pointer-events-none rounded border bg-muted px-1.5 py-0.5 text-[10px]">⌘K</kbd></Button><CommandDialog open={open} onOpenChange={setOpen} title="快速跳转" description="搜索 GraphNovel 页面和操作"><Command><CommandInput placeholder="搜索页面或操作…" /><CommandList><CommandEmpty>没有匹配结果。</CommandEmpty><CommandGroup heading="导航"><CommandItem onSelect={() => go("/")}><FolderKanban />项目库</CommandItem><CommandItem onSelect={() => go("/reader")}><Library />试读中心</CommandItem>{projectId && <><CommandItem onSelect={() => go(`/project/${encodeURIComponent(projectId)}/overview`)}><BookOpen />项目总览</CommandItem><CommandItem onSelect={() => go(`/project/${encodeURIComponent(projectId)}/studio/foundation`)}><BookOpen />Foundation</CommandItem><CommandItem onSelect={() => go(`/project/${encodeURIComponent(projectId)}/library/chapters`)}><Library />章节文稿</CommandItem><CommandItem onSelect={() => go(`/project/${encodeURIComponent(projectId)}/runs`)}><FolderKanban />运行中心</CommandItem></>}</CommandGroup>{onChat && <><CommandSeparator /><CommandGroup heading="操作"><CommandItem onSelect={() => { setOpen(false); onChat(); }}><Bot />打开创意助手</CommandItem></CommandGroup></>}</CommandList></Command></CommandDialog></>;
+}

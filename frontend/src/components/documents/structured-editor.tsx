@@ -1,0 +1,16 @@
+import { useState, type ReactNode } from "react";
+import { Save } from "lucide-react";
+import { api } from "../../lib/api";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
+import type { ProjectState, ServiceStatus } from "../../types/graph";
+
+const labels: Record<string, string> = { title: "标题", summary: "摘要", informationFlow: "信息流", sourceCharacter: "告知者", evidence: "获知依据", chapterHook: "章节钩子", causalChain: "因果链", plannedFacts: "计划事实", requiredFactIds: "引用事实" };
+export function StructuredDocumentEditor({ state, status, chapterNumber, initialValue, onDone }: { state: ProjectState; status: ServiceStatus; chapterNumber: number; initialValue: unknown; onDone: () => void }) {
+  const [value, setValue] = useState<Record<string, unknown>>(() => JSON.parse(JSON.stringify(initialValue ?? {})) as Record<string, unknown>); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  function update(path: string[], next: unknown) { setValue((current) => { const copy = JSON.parse(JSON.stringify(current)) as Record<string, unknown>; let target: any = copy; path.slice(0, -1).forEach((part) => { target[part] = target[part] && typeof target[part] === "object" ? target[part] : {}; target = target[part]; }); target[path[path.length - 1]] = next; return copy; }); }
+  function renderFields(current: unknown, path: string[] = []): ReactNode { if (!current || typeof current !== "object") return null; return Object.entries(current as Record<string, unknown>).map(([key, child]) => { const nextPath = [...path, key]; if (child && typeof child === "object") return <fieldset key={nextPath.join(".")} className="space-y-3 rounded-md border p-3"><legend className="px-1 text-sm font-medium">{labels[key] ?? key}</legend>{renderFields(child, nextPath)}</fieldset>; if (typeof child === "boolean") return <label key={nextPath.join(".")} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={child} onChange={(event) => update(nextPath, event.target.checked)} disabled={status === "running" || busy} />{labels[key] ?? key}</label>; return <label key={nextPath.join(".")} className="grid gap-2"><span className="text-xs font-medium text-muted-foreground">{labels[key] ?? key}</span>{typeof child === "number" ? <Input type="number" value={String(child)} onChange={(event) => update(nextPath, Number(event.target.value))} disabled={status === "running" || busy} /> : <Textarea value={String(child ?? "")} onChange={(event) => update(nextPath, event.target.value)} disabled={status === "running" || busy} />}</label>; }); }
+  async function save() { setBusy(true); setError(""); try { await api(`/api/projects/${encodeURIComponent(state.projectId)}/documents`, { method: "PATCH", body: JSON.stringify({ kind: "chapter_plan", chapterNumber, value }) }); onDone(); } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); setBusy(false); } }
+  return <div className="space-y-4">{renderFields(value)}<div className="flex items-center gap-2"><Button onClick={() => void save()} disabled={status === "running" || busy}><Save />保存规划</Button>{error && <span className="text-sm text-destructive">{error}</span>}</div></div>;
+}

@@ -5,3 +5,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 GraphNovel_Projects/
+node_modules/
+dist/
+npm-debug.log*
+.graphnovel-data/
