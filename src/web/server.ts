@@ -7,7 +7,8 @@ import {
   type CreateProjectInput,
   type ServiceEvent,
 } from "./service.js";
-import type { CreativeChatInput } from "../agents/creative-chat.js";
+import type { CreativeChatInput, CreativeChatMessage } from "../agents/creative-chat.js";
+import type { CreativeProjectDraftInput } from "../agents/creative-project-draft.js";
 
 const MAX_BODY_BYTES = 1_000_000;
 const FRONTEND_ROOT = resolve(process.cwd(), "dist/web");
@@ -49,6 +50,11 @@ async function handleRequest(
   if (request.method === "POST" && parts.length === 2 && parts[1] === "projects") {
     const state = await service.createProject(await readJson<CreateProjectInput>(request));
     sendJson(response, 201, { project: state });
+    return;
+  }
+  if (request.method === "POST" && parts.length === 3 && parts[1] === "creative" && parts[2] === "project-draft") {
+    const result = await service.draftProjectFromCreativeChat(parseCreativeProjectDraftRequest(await readJson<Record<string, unknown>>(request)));
+    sendJson(response, 200, { success: true, draft: result.draft, sessionId: result.sessionId });
     return;
   }
   if (request.method === "POST" && parts.length === 3 && parts[0] === "api" && parts[2] === "chat") {
@@ -243,6 +249,30 @@ function parseChatRequest(body: Record<string, unknown>): CreativeChatInput {
     return { role, content: message.content.trim() };
   });
   return { message: body.message.trim(), history };
+}
+
+function parseCreativeProjectDraftRequest(body: Record<string, unknown>): CreativeProjectDraftInput {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new ServiceError(400, "invalid_input", "请求体必须是对象");
+  }
+  if (!Array.isArray(body.history) || body.history.length === 0 || body.history.length > 20) {
+    throw new ServiceError(400, "invalid_input", "history 必须是 1-20 条消息的数组");
+  }
+  const history = body.history.map((item, index): CreativeChatMessage => {
+    if (!item || typeof item !== "object") throw new ServiceError(400, "invalid_input", `history[${index}] 格式无效`);
+    const message = item as Record<string, unknown>;
+    if (message.role !== "user" && message.role !== "assistant") {
+      throw new ServiceError(400, "invalid_input", `history[${index}].role 必须是 user 或 assistant`);
+    }
+    if (typeof message.content !== "string" || !message.content.trim() || message.content.length > 4000) {
+      throw new ServiceError(400, "invalid_input", `history[${index}].content 长度无效`);
+    }
+    return { role: message.role, content: message.content.trim() };
+  });
+  if (!history.some((message) => message.role === "user")) {
+    throw new ServiceError(400, "invalid_input", "history 至少需要一条作者消息");
+  }
+  return { history };
 }
 
 function parseChapterNumber(value: string): number {
