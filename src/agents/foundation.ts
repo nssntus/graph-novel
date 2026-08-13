@@ -226,6 +226,19 @@ export function createFoundationEngine(
     {
       key: REVIEW_NODE,
       async run(context) {
+        if (context.state.novelOutline?.planningMode === "rolling") {
+          if (context.state.foundationValidation?.passed !== true) {
+            return { status: "failed", error: "长篇 Foundation 必须先通过确定性 Registry 校验" };
+          }
+          context.state.foundationReview = {
+            passed: true,
+            score: 100,
+            summary: "结构、时序与 Registry 引用的确定性校验已通过；长篇语义质量不再依赖单次模型审查，将提交人工 Gate 最终审批。",
+            issues: [],
+            rewriteTargets: [],
+          };
+          return { status: "completed" };
+        }
         const review = await runContractedNode(
           context,
           dependencies,
