@@ -49,10 +49,11 @@ export class PiAgentRuntime {
       initialState: {
         systemPrompt: request.systemPrompt,
         model: request.model,
-        thinkingLevel: this.options.thinkingLevel ?? "off",
+        thinkingLevel: request.thinkingLevel ?? this.options.thinkingLevel ?? "off",
       },
       sessionId,
       streamFn,
+      onPayload: request.jsonMode ? enableJsonMode : undefined,
       thinkingBudgets: this.options.thinkingBudgets,
     });
 
@@ -141,4 +142,10 @@ export class PiAgentRuntime {
       .map((part) => part.text)
       .join("");
   }
+}
+
+function enableJsonMode(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  if (!("messages" in payload)) return payload;
+  return { ...payload, response_format: { type: "json_object" } };
 }

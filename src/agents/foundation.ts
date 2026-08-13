@@ -11,6 +11,7 @@ import {
   parseNovelOutline,
   parseRelationshipMap,
   parseStoryArchitecture,
+  parseStoryArchitectureIntent,
   parseStyleGuide,
   parseWorldSetting,
 } from "../contracts/foundation.js";
@@ -25,8 +26,10 @@ import type {
   FoundationRewriteTarget,
   NarrativePlan,
   NovelOutline,
+  StoryArchitecture,
   WorldSetting,
 } from "../state/foundation.js";
+import type { StoryArchitectureIntent } from "../contracts/foundation.js";
 import { buildRollingNarrativePlan, buildRollingNovelOutline } from "../state/rolling-outline.js";
 import type { LegacyFoundationSource } from "../state/foundation-upgrade.js";
 import {
@@ -100,6 +103,21 @@ const ARCHITECTURE_CONTRACT = {
   centralConflict: "非空字符串", stakes: "非空字符串", endingDirection: "非空字符串",
   storyArcs: [{ arcId: "稳定 ASCII ID；全书共 1-12 个阶段", name: "非空字符串", chapterRange: "明确的连续章节范围，例如 1-40；所有阶段必须无缝覆盖全书", objective: "非空字符串", opposition: "非空字符串", turningPoint: "非空字符串", outcome: "非空字符串" }],
   characterArcMilestones: [{ characterId: "角色 ID", startingState: "非空字符串", milestones: ["非空字符串；至少一项"], endingState: "非空字符串" }],
+};
+
+const ARCHITECTURE_INTENT_CONTRACT = {
+  centralConflict: "最多 400 字",
+  stakes: "最多 400 字",
+  endingDirection: "最多 400 字",
+  storyArcs: [{
+    arcId: "可选的稳定 ASCII ID；缺省时由 Graph 引擎分配",
+    name: "最多 80 字；全书共 1-8 个阶段",
+    objective: "最多 300 字",
+    opposition: "最多 300 字",
+    turningPoint: "最多 300 字",
+    outcome: "最多 300 字",
+    weight: "1-5 的整数，表示相对篇幅；不输出章节号或 ID",
+  }],
 };
 
 const NARRATIVE_PLAN_CONTRACT = {
@@ -180,28 +198,22 @@ export function createFoundationEngine(
       creativeCharter: state.creativeCharter, notes: state.creativeNotes,
     }), (state, value) => { state.worldSetting = value; }, dependencies, options.upgradeSource),
     contractedNode(CHARACTER_NODE, "角色设计师", [CHARACTER_CONTRACT], parseCharacters, (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: state.worldSetting,
+      creativeCharter: state.creativeCharter, worldSetting: compactWorld(state),
     }), (state, value) => { state.characters = value; }, dependencies, options.upgradeSource, "JSON 数组"),
     contractedNode(RELATIONSHIP_NODE, "人物关系与秘密揭示调度师", RELATIONSHIP_CONTRACT, parseRelationshipMap, (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: state.worldSetting, characters: state.characters,
+      creativeCharter: state.creativeCharter, worldSetting: compactWorld(state), characters: compactCharacters(state),
     }), (state, value) => { state.relationshipMap = value; }, dependencies, options.upgradeSource),
-    contractedNode(ARCHITECTURE_NODE, "长篇故事架构师", ARCHITECTURE_CONTRACT, (text, state) => parseStoryArchitecture(text, state.targetTotalChapters), (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: state.worldSetting,
-      characters: state.characters, relationshipMap: state.relationshipMap,
-      targetTotalChapters: state.targetTotalChapters,
-    }), (state, value) => { state.storyArchitecture = value; }, dependencies, options.upgradeSource),
+    architectureNode(dependencies, options.upgradeSource),
     narrativeNode(dependencies, options.upgradeSource),
     outlineNode(dependencies, options.upgradeSource),
     contractedNode(STYLE_NODE, "文风与叙事规范设计师", STYLE_GUIDE_CONTRACT, parseStyleGuide, (state) => ({
-      creativeCharter: state.creativeCharter, characters: state.characters,
+      creativeCharter: state.creativeCharter, characters: compactCharacterVoices(state),
       storyArchitecture: state.storyArchitecture, outlineDigest: compactOutline(state.novelOutline),
     }), (state, value) => { state.styleGuide = value; }, dependencies, options.upgradeSource),
     contractedNode(BASELINE_NODE, "开篇连续性建档员", BASELINE_CONTRACT, (text, state) => (
       alignBaselineKnowledge(parseContinuityBaseline(text), state)
     ), (state) => ({
-      worldSetting: state.worldSetting, characters: state.characters,
-      relationshipMap: state.relationshipMap, storyArchitecture: state.storyArchitecture,
-      narrativePlan: state.narrativePlan, outlineDigest: compactOutline(state.novelOutline),
+      ...baselinePlanningInput(state),
     }), (state, value) => { state.continuityBaseline = value; }, dependencies, options.upgradeSource),
     {
       key: VALIDATION_NODE,
@@ -236,6 +248,7 @@ export function createFoundationEngine(
             }
             return review;
           },
+          { maxOutputTokens: 2_048, thinkingLevel: "off" },
         );
         context.state.foundationReview = review;
         context.state.foundationReviewAttempts += 1;
@@ -287,28 +300,44 @@ export async function runFoundationGeneration(
   checkpoints: CheckpointStore,
   sink?: GraphEventSink,
 ): Promise<GraphRunResult> {
-  const upstreamReady = Boolean(
-    state.creativeCharter && state.worldSetting && state.characters.length
-      && state.relationshipMap && state.storyArchitecture && state.narrativePlan,
-  );
-  const resumeNarrative = Boolean(
-    state.creativeCharter && state.worldSetting && state.characters.length
-      && state.relationshipMap && state.storyArchitecture
-      && state.nodes[NARRATIVE_NODE]?.status === "failed"
-      && state.lastError?.nodeKey === NARRATIVE_NODE,
-  );
-  const resumeOutline = !resumeNarrative && upstreamReady && (
-    ((state.foundationOutlineProgress?.status === "failed" || state.foundationOutlineProgress?.status === "running")
-      && state.foundationOutlineProgress.nextChapter <= state.targetTotalChapters)
-      || (!state.foundationOutlineProgress && !state.novelOutline && state.nodes[OUTLINE_NODE]?.status === "failed")
-  );
+  const startNode = foundationGenerationStartNode(state);
+  const resumeOutline = startNode === OUTLINE_NODE;
   state.foundationReview = null;
   state.foundationReviewAttempts = 0;
   state.foundationValidation = null;
   state.foundationSnapshot = null;
   state.foundationOutlineProgress = resumeOutline ? state.foundationOutlineProgress : null;
-  const startNode = resumeNarrative ? NARRATIVE_NODE : resumeOutline ? OUTLINE_NODE : CHARTER_NODE;
   return createFoundationEngine(dependencies, checkpoints).run(state, startNode, sink);
+}
+
+function foundationGenerationStartNode(state: GraphNovelState): string {
+  const failedNode = state.lastError?.nodeKey;
+  const restartable = new Set<string>([...FOUNDATION_DOCUMENT_ORDER, VALIDATION_NODE, REVIEW_NODE]);
+  const legacyOutlineResume = Boolean(
+    (state.foundationOutlineProgress?.status === "failed" || state.foundationOutlineProgress?.status === "running")
+      && state.foundationOutlineProgress.nextChapter <= state.targetTotalChapters,
+  );
+  if (legacyOutlineResume) return OUTLINE_NODE;
+  if (!failedNode || !restartable.has(failedNode)) return CHARTER_NODE;
+  const failedIndex = FOUNDATION_DOCUMENT_ORDER.indexOf(failedNode as FoundationRewriteTarget);
+  const requiredThrough = failedIndex >= 0 ? failedIndex : FOUNDATION_DOCUMENT_ORDER.length;
+  for (let index = 0; index < requiredThrough; index += 1) {
+    const key = FOUNDATION_DOCUMENT_ORDER[index]!;
+    if (!foundationDocumentAvailable(state, key) || state.foundationDocuments[key]?.status !== "current") return key;
+  }
+  return failedNode;
+}
+
+function foundationDocumentAvailable(state: GraphNovelState, key: FoundationRewriteTarget): boolean {
+  if (key === CHARTER_NODE) return Boolean(state.creativeCharter);
+  if (key === WORLD_NODE) return Boolean(state.worldSetting);
+  if (key === CHARACTER_NODE) return state.characters.length > 0;
+  if (key === RELATIONSHIP_NODE) return Boolean(state.relationshipMap);
+  if (key === ARCHITECTURE_NODE) return Boolean(state.storyArchitecture);
+  if (key === NARRATIVE_NODE) return Boolean(state.narrativePlan);
+  if (key === OUTLINE_NODE) return Boolean(state.novelOutline);
+  if (key === STYLE_NODE) return Boolean(state.styleGuide);
+  return Boolean(state.continuityBaseline);
 }
 
 export function isLegacyFoundationProject(state: GraphNovelState): boolean {
@@ -449,16 +478,15 @@ function contractedNode<T>(
     async run(context) {
       const nodeInput = {
         ...input(context.state),
-        foundationRegistry: context.state.foundationRegistry,
+        registryCatalog: registryCatalogFor(context.state, key),
         revision: revisionContext(context.state, key),
         ...(upgradeSource ? { legacyUpgradeReference: legacyReferenceForNode(upgradeSource, key) } : {}),
-        outputContract: contract,
       };
       const value = await runContractedNode(
         context,
         dependencies,
         key,
-        `你是${role}。只输出${outputKind}，不要 Markdown 代码围栏、解释或额外文字。所有契约字段都必须存在，禁止 null；除明确允许为空的数组或字符串外，内容必须具体且可执行。严格使用契约：${JSON.stringify(contract)}。不得违背已确定的上游文档。${upgradeSource ? "这是旧项目结构化升级。legacyUpgradeReference 是不可改写的既有正文与设定证据；只能补齐结构、稳定 ID 和缺失计划，禁止改变已经确立的世界事实、角色核心设定、章节标题、摘要和关键事件。" : ""}`,
+        `你是${role}。只输出${outputKind}，不要 Markdown 代码围栏、解释或额外文字。所有契约字段都必须存在，禁止 null；除明确允许为空的数组或字符串外，内容必须具体且可执行。严格使用契约：${JSON.stringify(contract)}。这是有界结构化任务，务必简洁，禁止扩写契约外字段。registryCatalog 是唯一允许引用的 ID 白名单，不得自行创建引用 ID。不得违背已确定的上游文档。${upgradeSource ? "这是旧项目结构化升级。legacyUpgradeReference 是不可改写的既有正文与设定证据；只能补齐结构、稳定 ID 和缺失计划，禁止改变已经确立的世界事实、角色核心设定、章节标题、摘要和关键事件。" : ""}`,
         JSON.stringify(nodeInput),
         (text) => {
           const parsed = parser(text, context.state);
@@ -467,9 +495,51 @@ function contractedNode<T>(
           assertLegacyUpgradeValue(key, preserved, upgradeSource);
           return preserved;
         },
+        { maxOutputTokens: foundationOutputBudget(key), thinkingLevel: "off" },
       );
       apply(context.state, value);
       recordFoundationDocument(context.state, key, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function architectureNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  if (upgradeSource) {
+    return contractedNode(
+      ARCHITECTURE_NODE,
+      "长篇故事架构师",
+      ARCHITECTURE_CONTRACT,
+      (text, state) => parseStoryArchitecture(text, state.targetTotalChapters),
+      architecturePlanningInput,
+      (state, value) => { state.storyArchitecture = value; },
+      dependencies,
+      upgradeSource,
+    );
+  }
+  return {
+    key: ARCHITECTURE_NODE,
+    async run(context) {
+      const nodeInput = {
+        ...architecturePlanningInput(context.state),
+        registryCatalog: registryCatalogFor(context.state, ARCHITECTURE_NODE),
+        revision: revisionContext(context.state, ARCHITECTURE_NODE),
+      };
+      const intent = await runContractedNode(
+        context,
+        dependencies,
+        ARCHITECTURE_NODE,
+        `你是长篇故事架构师。只输出 JSON，不要解释。你只负责固定规模的全书宏观阶段语义，不输出章节范围或人物里程碑；这些字段由 Graph 引擎确定性编译。全书阶段最多 8 个，所有字段严格遵守契约且保持简洁：${JSON.stringify(ARCHITECTURE_INTENT_CONTRACT)}`,
+        JSON.stringify(nodeInput),
+        parseStoryArchitectureIntent,
+        { maxOutputTokens: 4_096, thinkingLevel: "off" },
+      );
+      const value = compileStoryArchitecture(intent, context.state);
+      context.state.storyArchitecture = value;
+      recordFoundationDocument(context.state, ARCHITECTURE_NODE, nodeInput, value);
       return { status: "completed" };
     },
   };
@@ -563,6 +633,7 @@ function outlineNode(
           assertLegacyOutline(preserved as NovelOutline, upgradeSource.novelOutline);
           return preserved;
         },
+        { maxOutputTokens: foundationOutputBudget(OUTLINE_NODE), thinkingLevel: "off" },
       );
       context.state.novelOutline = value;
       context.state.foundationOutlineProgress = null;
@@ -636,6 +707,107 @@ function reviewOutlineDigest(outline: NovelOutline | null): unknown {
   };
 }
 
+function compactWorld(state: GraphNovelState) {
+  const world = state.worldSetting;
+  if (!world) return null;
+  return {
+    era: world.era,
+    location: world.location,
+    magicSystem: world.magicSystem,
+    technologyLevel: world.technologyLevel,
+    socialStructure: world.socialStructure,
+    rulesAndLaws: world.rulesAndLaws,
+    keyLocations: (world.keyLocations ?? []).map(({ locationId, name, roleInStory }) => ({ locationId, name, roleInStory })),
+    factions: (world.factions ?? []).map(({ factionId, name, goal }) => ({ factionId, name, goal })),
+    powerSystem: world.powerSystem ? {
+      systemId: world.powerSystem.systemId,
+      capabilities: world.powerSystem.capabilities,
+      limitations: world.powerSystem.limitations,
+      costs: world.powerSystem.costs,
+    } : null,
+    rules: (world.rules ?? []).map(({ ruleId, statement, consequence }) => ({ ruleId, statement, consequence })),
+  };
+}
+
+function compactCharacters(state: GraphNovelState) {
+  return state.characters.map((character) => ({
+    characterId: character.characterId,
+    name: character.name,
+    role: character.role,
+    personality: character.personality,
+    motivation: character.motivation,
+    arcDescription: character.arcDescription,
+    secrets: character.secrets,
+  }));
+}
+
+function compactCharacterVoices(state: GraphNovelState) {
+  return state.characters.map(({ characterId, name, role, voice }) => ({ characterId, name, role, voice }));
+}
+
+function architecturePlanningInput(state: GraphNovelState) {
+  return {
+    creativeCharter: state.creativeCharter,
+    worldSetting: compactWorld(state),
+    characters: compactCharacters(state),
+    relationshipMap: state.relationshipMap,
+    targetTotalChapters: state.targetTotalChapters,
+  };
+}
+
+function compileStoryArchitecture(intent: StoryArchitectureIntent, state: GraphNovelState): StoryArchitecture {
+  const plannedArcs = intent.storyArcs.slice(0, Math.max(1, Math.min(intent.storyArcs.length, state.targetTotalChapters)));
+  const totalWeight = plannedArcs.reduce((sum, arc) => sum + arc.weight, 0);
+  let allocatedWeight = 0;
+  let start = 1;
+  const storyArcs = plannedArcs.map((arc, index) => {
+    allocatedWeight += arc.weight;
+    const end = index === plannedArcs.length - 1
+      ? state.targetTotalChapters
+      : Math.max(start, Math.min(
+        state.targetTotalChapters - (plannedArcs.length - index - 1),
+        Math.round((allocatedWeight / totalWeight) * state.targetTotalChapters),
+      ));
+    const compiled = {
+      arcId: arc.arcId ?? `arc_${slugId(arc.name)}`,
+      name: arc.name,
+      chapterRange: `${start}-${end}`,
+      objective: arc.objective,
+      opposition: arc.opposition,
+      turningPoint: arc.turningPoint,
+      outcome: arc.outcome,
+    };
+    start = end + 1;
+    return compiled;
+  });
+  const usedIds = new Set(registryCatalogFor(state, ARCHITECTURE_NODE).map((entry) => entry.id));
+  storyArcs.forEach((arc, index) => { arc.arcId = uniqueArchitectureId(arc.arcId!, index, usedIds); usedIds.add(arc.arcId!); });
+  return {
+    centralConflict: intent.centralConflict,
+    stakes: intent.stakes,
+    endingDirection: intent.endingDirection,
+    storyArcs,
+    characterArcMilestones: state.characters.map((character) => ({
+      characterId: character.characterId,
+      startingState: character.personality,
+      milestones: [character.arcDescription],
+      endingState: `完成角色弧：${character.arcDescription}`,
+    })),
+  };
+}
+
+function slugId(value: string): string {
+  const ascii = value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return ascii || "stage";
+}
+
+function uniqueArchitectureId(requested: string, index: number, used: Set<string>): string {
+  let candidate = requested;
+  let suffix = index + 1;
+  while (used.has(candidate)) candidate = `${requested}_${suffix++}`;
+  return candidate;
+}
+
 function edge(from: string, to: string, reason: string) {
   return { from, to, reason, when: completed };
 }
@@ -661,26 +833,112 @@ function revisionContext(state: GraphNovelState, node: FoundationRewriteTarget) 
       ? state.foundationValidation.issues.filter((issue) => issue.target === node)
       : [],
     reviewIssues: state.foundationReview?.issues.filter((issue) => issue.target === node) ?? [],
-    allReviewIssues: state.foundationReview?.passed === false ? state.foundationReview.issues : [],
   };
+}
+
+function foundationOutputBudget(node: FoundationRewriteTarget): number {
+  if (node === CHARTER_NODE || node === STYLE_NODE) return 2_048;
+  if (node === WORLD_NODE || node === RELATIONSHIP_NODE || node === ARCHITECTURE_NODE) return 4_096;
+  return 6_144;
+}
+
+function registryCatalogFor(state: GraphNovelState, node: FoundationRewriteTarget) {
+  const nodeIndex = FOUNDATION_DOCUMENT_ORDER.indexOf(node);
+  if (nodeIndex <= 0) return [];
+  const allowedOwners = new Set(FOUNDATION_DOCUMENT_ORDER.slice(0, nodeIndex).filter((owner) => (
+    state.foundationDocuments[owner]?.status === "current"
+  )));
+  return (state.foundationRegistry?.entries ?? [])
+    .filter((entry) => allowedOwners.has(entry.owner))
+    .map(({ id, kind, label }) => ({ id, kind, label }));
 }
 
 function foundationReviewInput(state: GraphNovelState, upgradeSource?: LegacyFoundationSource) {
   return {
     targetTotalChapters: state.targetTotalChapters,
     creativeCharter: state.creativeCharter,
-    worldSetting: state.worldSetting,
-    characters: state.characters,
+    worldSetting: compactWorld(state),
+    characters: compactCharacters(state),
     relationshipMap: state.relationshipMap,
     storyArchitecture: state.storyArchitecture,
     narrativePlan: state.narrativePlan,
     outlineDigest: reviewOutlineDigest(state.novelOutline),
     styleGuide: state.styleGuide,
     continuityBaseline: state.continuityBaseline,
-    foundationRegistry: state.foundationRegistry,
+    registryCatalog: (state.foundationRegistry?.entries ?? []).map(({ id, kind, label }) => ({ id, kind, label })),
     deterministicValidation: state.foundationValidation,
-    ...(upgradeSource ? { legacyUpgradeReference: upgradeSource } : {}),
-    outputContract: REVIEW_CONTRACT,
+    ...(upgradeSource ? { legacyUpgradeReference: legacyReviewReference(upgradeSource) } : {}),
+  };
+}
+
+function legacyReviewReference(source: LegacyFoundationSource) {
+  const chapterSummary = (chapter: LegacyFoundationSource["approvedChapters"][number]) => ({
+    chapterNumber: chapter.chapterNumber,
+    title: clipText(chapter.title),
+    summary: clipText(chapter.summary),
+    endingExcerpt: clipText(chapter.endingExcerpt),
+    unresolvedActions: chapter.unresolvedActions.slice(0, 8).map((item) => clipText(item)),
+    openThreads: chapter.openThreads.slice(0, 8).map((item) => clipText(item)),
+  });
+  const approved = source.approvedChapters;
+  return {
+    world: {
+      era: clipText(source.worldSetting.era),
+      location: clipText(source.worldSetting.location),
+      rulesAndLaws: clipText(source.worldSetting.rulesAndLaws),
+    },
+    characters: source.characters.slice(0, 24).map((character) => ({
+      characterId: character.characterId,
+      name: clipText(character.name),
+      role: clipText(character.role),
+      motivation: clipText(character.motivation),
+      arcDescription: clipText(character.arcDescription),
+    })),
+    outline: {
+      genre: clipText(source.novelOutline.genre),
+      premise: clipText(source.novelOutline.premise),
+      theme: clipText(source.novelOutline.theme),
+      targetLength: clipText(source.novelOutline.targetLength),
+      chapterCount: source.novelOutline.chapterOutlines.length,
+    },
+    approvedChapterCount: approved.length,
+    approvedChapterSamples: uniqueByChapter([
+      ...approved.slice(0, 2),
+      ...approved.slice(-6),
+    ]).map(chapterSummary),
+    narrativeFactCount: source.narrativeFacts.length,
+    latestFacts: source.narrativeFacts.slice(-32).map((fact) => ({
+      factId: fact.factId,
+      statement: clipText(fact.statement),
+      establishedInChapter: fact.establishedInChapter,
+    })),
+  };
+}
+
+function clipText(value: string, maximum = 300): string {
+  return value.length <= maximum ? value : `${value.slice(0, maximum)}...`;
+}
+
+function uniqueByChapter<T extends { chapterNumber: number }>(items: T[]): T[] {
+  return [...new Map(items.map((item) => [item.chapterNumber, item])).values()];
+}
+
+function sampleByChapter<T extends { chapterNumber: number }>(items: T[]): T[] {
+  return uniqueByChapter([...items.slice(0, 2), ...items.slice(-6)]);
+}
+
+function baselinePlanningInput(state: GraphNovelState) {
+  const openingFacts = (state.narrativePlan?.revelationPlan ?? [])
+    .filter((item) => item.knownInitiallyBy.length > 0 || item.earliestChapter <= 1)
+    .map(({ factId, information, knownInitiallyBy, earliestChapter }) => ({ factId, information, knownInitiallyBy, earliestChapter }));
+  return {
+    worldSetting: compactWorld(state),
+    characters: compactCharacters(state),
+    relationshipSecrets: (state.relationshipMap?.secrets ?? []).map(({ secretId, holders, affectedCharacters, plannedRevealChapter }) => ({
+      secretId, holders, affectedCharacters, plannedRevealChapter,
+    })),
+    openingFacts,
+    openingRoadmap: (state.novelOutline?.roadmapSegments ?? []).slice(0, 1),
   };
 }
 
@@ -781,57 +1039,77 @@ function foundationUpgradeResumeNode(state: GraphNovelState, startedAt: string):
 }
 
 function legacyReferenceForNode(source: LegacyFoundationSource, node: FoundationRewriteTarget): unknown {
-  const chapterCanon = source.approvedChapters.map(({ textSample: _textSample, ...chapter }) => chapter);
+  const chapterCanon = sampleByChapter(source.approvedChapters).map((chapter) => ({
+    chapterNumber: chapter.chapterNumber,
+    title: clipText(chapter.title),
+    summary: clipText(chapter.summary),
+    endingExcerpt: clipText(chapter.endingExcerpt),
+    unresolvedActions: chapter.unresolvedActions.slice(0, 8).map(clipText),
+    openThreads: chapter.openThreads.slice(0, 8).map(clipText),
+  }));
   const outlineSummary = {
-    ...source.novelOutline,
-    chapterOutlines: source.novelOutline.chapterOutlines.map((chapter) => ({
+    genre: source.novelOutline.genre,
+    premise: source.novelOutline.premise,
+    theme: source.novelOutline.theme,
+    targetLength: source.novelOutline.targetLength,
+    planningMode: source.novelOutline.planningMode,
+    chapterCount: source.novelOutline.chapterOutlines.length,
+    chapterSamples: sampleByChapter(source.novelOutline.chapterOutlines).map((chapter) => ({
       chapterNumber: chapter.chapterNumber,
-      title: chapter.title,
-      summary: chapter.summary,
-      keyEvents: chapter.keyEvents,
+      title: clipText(chapter.title),
+      summary: clipText(chapter.summary),
+      keyEvents: chapter.keyEvents.slice(0, 8).map((item) => clipText(item)),
     })),
   };
+  const approvedChapterCount = source.approvedChapters.length;
   if (node === CHARTER_NODE) return {
     worldSetting: source.worldSetting,
     characters: source.characters,
     novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
   };
   if (node === WORLD_NODE) return {
     worldSetting: source.worldSetting,
     novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
-    narrativeFacts: source.narrativeFacts,
+    narrativeFacts: source.narrativeFacts.slice(-64),
   };
   if (node === CHARACTER_NODE || node === RELATIONSHIP_NODE) return {
     characters: source.characters,
     ...(node === RELATIONSHIP_NODE ? { novelOutline: outlineSummary } : {}),
+    approvedChapterCount,
     approvedChapters: chapterCanon,
-    characterKnowledge: source.characterKnowledge,
-    characterArcs: source.characterArcs,
+    characterKnowledge: source.characterKnowledge.slice(-128),
+    characterArcs: Object.fromEntries(Object.entries(source.characterArcs).slice(-24)),
   };
   if (node === ARCHITECTURE_NODE) return {
-    novelOutline: source.novelOutline,
+    novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
   };
   if (node === NARRATIVE_NODE) return {
-    novelOutline: source.novelOutline,
+    novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
-    narrativeFacts: source.narrativeFacts,
-    characterKnowledge: source.characterKnowledge,
-    foreshadowings: source.foreshadowings,
+    narrativeFacts: source.narrativeFacts.slice(-64),
+    characterKnowledge: source.characterKnowledge.slice(-128),
+    foreshadowings: source.foreshadowings.slice(-64),
   };
   if (node === OUTLINE_NODE) return {
-    novelOutline: source.novelOutline,
+    novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
-    narrativeFacts: source.narrativeFacts,
+    narrativeFacts: source.narrativeFacts.slice(-64),
   };
   if (node === STYLE_NODE) return {
     characters: source.characters,
-    chapterSamples: source.approvedChapters.map((chapter) => ({
+    approvedChapterCount,
+    chapterSamples: sampleByChapter(source.approvedChapters).map((chapter) => ({
       chapterNumber: chapter.chapterNumber,
-      title: chapter.title,
-      textSample: chapter.textSample,
+      title: clipText(chapter.title),
+      textSample: clipText(chapter.textSample, 600),
     })),
   };
   return {

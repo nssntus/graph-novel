@@ -7,7 +7,7 @@ import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { EventStream, type AssistantMessageEvent, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { CheckpointStore } from "../src/checkpoint/store.js";
 import { parseChapterPlan, parseGeneratedChapterPlan } from "../src/contracts/chapter.js";
-import { parseWorldSetting } from "../src/contracts/foundation.js";
+import { parseCharacters, parseNarrativePlan, parseStoryArchitectureIntent, parseWorldSetting } from "../src/contracts/foundation.js";
 import {
   applyFoundationDecision,
   beginLegacyFoundationUpgrade,
@@ -26,7 +26,7 @@ function model(): Model<"openai-responses"> {
     id: "mock", name: "mock", api: "openai-responses", provider: "openai",
     baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 8192, maxTokens: 1024,
+    contextWindow: 16_384, maxTokens: 8_192,
   };
 }
 
@@ -41,7 +41,7 @@ function response(text: string, stopReason: AssistantMessage["stopReason"] = "st
   };
 }
 
-function streamFor(text: string): ReturnType<StreamFn> {
+function streamFor(text: string, stopReason: AssistantMessage["stopReason"] = "stop"): ReturnType<StreamFn> {
   const stream = new EventStream<AssistantMessageEvent, AssistantMessage>(
     (event) => event.type === "done" || event.type === "error",
     (event) => {
@@ -50,13 +50,37 @@ function streamFor(text: string): ReturnType<StreamFn> {
       throw new Error("Mock stream ended without a final event");
     },
   );
-  queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: response(text) }));
+  queueMicrotask(() => stream.push({ type: "done", reason: stopReason === "length" ? "length" : "stop", message: response(text, stopReason) }));
   return stream;
 }
 
 function foundationResponses(): string[] {
   return enhancedFoundationResponses();
 }
+
+test("Foundation contracts reject output that exceeds fixed collection and field limits", () => {
+  const character = JSON.parse(enhancedFoundationResponses()[2]!) as Record<string, unknown>[];
+  assert.throws(
+    () => parseCharacters(JSON.stringify(Array.from({ length: 25 }, (_, index) => ({
+      ...character[0], characterId: `char_${index}`, name: `角色${index}`,
+    })))),
+    /核心角色最多包含 24 人/,
+  );
+  const architecture = JSON.parse(enhancedFoundationResponses()[4]!) as any;
+  assert.throws(
+    () => parseStoryArchitectureIntent(JSON.stringify({
+      ...architecture,
+      storyArcs: Array.from({ length: 9 }, (_, index) => ({ ...architecture.storyArcs[0], name: `阶段${index}` })),
+    })),
+    /最多包含 8 项/,
+  );
+  const world = JSON.parse(enhancedFoundationResponses()[1]!) as any;
+  world.history = "过".repeat(801);
+  assert.throws(() => parseWorldSetting(JSON.stringify(world)), /最多包含 800 个字符/);
+  const narrative = JSON.parse(enhancedFoundationResponses()[5]!) as any;
+  narrative.foreshadowingPlan[0].reinforceChapters = Array.from({ length: 65 }, (_, index) => index + 2);
+  assert.throws(() => parseNarrativePlan(JSON.stringify(narrative), 100), /最多包含 64 项/);
+});
 
 test("Foundation graph writes candidates and pauses at its Gate", async () => {
   const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-"));
@@ -100,8 +124,10 @@ test("Foundation prompts include complete output contracts for every node", asyn
   const responses = foundationResponses();
   let index = 0;
   const prompts: string[] = [];
-  const streamFn: StreamFn = (_model, context) => {
-    prompts.push(JSON.stringify(context.messages ?? null));
+  const requestOptions: Array<{ maxTokens?: number; reasoning?: unknown }> = [];
+  const streamFn: StreamFn = (_model, context, options) => {
+    prompts.push(`${context.systemPrompt}\n${JSON.stringify(context.messages ?? null)}`);
+    requestOptions.push({ maxTokens: options?.maxTokens, reasoning: options?.reasoning });
     return streamFor(responses[index++]);
   };
 
@@ -112,7 +138,6 @@ test("Foundation prompts include complete output contracts for every node", asyn
   );
 
   assert.equal(prompts.length, 10);
-  assert.match(prompts[0]!, /outputContract/);
   assert.match(prompts[0]!, /genrePromise/);
   assert.match(prompts[1]!, /rulesAndLaws/);
   assert.match(prompts[2]!, /arcDescription/);
@@ -127,6 +152,8 @@ test("Foundation prompts include complete output contracts for every node", asyn
   assert.doesNotMatch(prompts[7]!, /characterVoices/);
   assert.match(prompts[8]!, /initialKnowledge/);
   assert.match(prompts[9]!, /rewriteTargets/);
+  assert.ok(requestOptions.every((item) => item.reasoning === undefined));
+  assert.deepEqual(requestOptions.map((item) => item.maxTokens), [2_048, 4_096, 6_144, 4_096, 4_096, 6_144, 6_144, 2_048, 6_144, 2_048]);
 });
 
 test("Foundation retries one malformed model response with the contract error", async () => {
@@ -227,6 +254,85 @@ test("Foundation model workload stays bounded when a long project grows to 5000 
   }
   assert.deepEqual(measurements.map((item) => item.calls), [8, 8]);
   assert.ok(Math.abs(measurements[1]!.largestPrompt - measurements[0]!.largestPrompt) < 256, JSON.stringify(measurements));
+});
+
+test("a failed architecture retry resumes at architecture with compact input and bounded policy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-architecture-resume-"));
+  const state = createInitialState("foundation-architecture-resume", "Foundation Architecture Resume");
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  let index = 0;
+  const store = new CheckpointStore(root);
+  const failed = await runFoundationGeneration(
+    state,
+    {
+      runtime: new PiAgentRuntime({ thinkingLevel: "max" }),
+      model: { ...model(), reasoning: true },
+      streamFn: () => {
+        const current = index++;
+        if (current === 4) return streamFor("", "length");
+        return streamFor(full[current]!);
+      },
+    },
+    store,
+  );
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.state.lastError?.nodeKey, "story_architecture");
+  const upstreamAttempts = Object.fromEntries(
+    ["creative_charter", "world_building", "character_design", "relationship_design"]
+      .map((key) => [key, state.nodes[key]?.attempts]),
+  );
+
+  const prompts: string[] = [];
+  const options: Array<{ maxTokens?: number; reasoning?: unknown }> = [];
+  const responses = [full[4]!, full[7]!, full[8]!, full[9]!];
+  let resumedIndex = 0;
+  const resumed = await runFoundationGeneration(
+    state,
+    {
+      runtime: new PiAgentRuntime({ thinkingLevel: "max" }),
+      model: { ...model(), reasoning: true, maxTokens: 8_192 },
+      streamFn: (_model, request, requestOptions) => {
+        prompts.push(`${request.systemPrompt}\n${JSON.stringify(request.messages ?? null)}`);
+        options.push({ maxTokens: requestOptions?.maxTokens, reasoning: requestOptions?.reasoning });
+        return streamFor(responses[resumedIndex++]!);
+      },
+    },
+    store,
+  );
+  assert.equal(resumed.status, "awaiting_approval", JSON.stringify(state.lastError));
+  assert.equal(resumedIndex, 4);
+  assert.deepEqual(Object.fromEntries(Object.keys(upstreamAttempts).map((key) => [key, state.nodes[key]?.attempts])), upstreamAttempts);
+  assert.ok(prompts[0]!.length < 20_000, `architecture prompt is ${prompts[0]!.length} chars`);
+  assert.doesNotMatch(prompts[0]!, /foundationRegistry/);
+  assert.ok(options.every((item) => item.reasoning === undefined));
+  assert.equal(options[0]?.maxTokens, 4_096);
+  assert.deepEqual(state.storyArchitecture?.storyArcs.map((arc) => arc.chapterRange), ["1-400"]);
+});
+
+test("deterministic architecture compilation avoids upstream Registry ID collisions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-architecture-id-collision-"));
+  const state = createInitialState("architecture-id-collision", "Architecture ID Collision");
+  state.targetTotalChapters = 12;
+  const responses = enhancedFoundationResponses();
+  const architecture = JSON.parse(responses[4]!) as any;
+  architecture.storyArcs[0].arcId = "rule_dual_witness";
+  responses[4] = JSON.stringify(architecture);
+  const outline = JSON.parse(responses[6]!) as any;
+  outline.chapterOutlines.forEach((chapter: any) => { chapter.storyArcIds = ["rule_dual_witness_1"]; });
+  responses[6] = JSON.stringify(outline);
+  let index = 0;
+
+  const result = await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(responses[index++]!) },
+    new CheckpointStore(root),
+  );
+
+  assert.equal(result.status, "awaiting_approval", JSON.stringify(state.lastError));
+  assert.equal(state.storyArchitecture?.storyArcs[0]?.arcId, "rule_dual_witness_1");
+  assert.equal(state.foundationValidation?.passed, true);
+  assert.equal(state.foundationValidation?.issues.some((issue) => issue.code === "duplicate_id"), false);
 });
 
 test("rolling narrative compilation binds collision-free Registry IDs", async () => {
@@ -1022,5 +1128,7 @@ test("long legacy Foundation upgrade switches to a rolling roadmap without an ou
   assert.equal(state.novelOutline?.chapterOutlines.length, 0);
   assert.deepEqual(state.novelOutline?.roadmapSegments?.map((item) => [item.chapterStart, item.chapterEnd]), [[1, 400]]);
   assert.equal(prompts.some((prompt) => prompt.includes("novel_outline.chapterOutlines")), false);
+  assert.equal(prompts.some((prompt) => prompt.includes('"chapterOutlines"')), false);
+  assert.ok(Math.max(...prompts.map((prompt) => prompt.length)) < 50_000);
   assert.equal(JSON.stringify(state.approvedChapters), approvedBefore);
 });

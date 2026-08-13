@@ -19,6 +19,7 @@ test("legacy DeepSeek environment settings become Pi Agent dependencies", () => 
     timeoutMs: 45_000,
     apiRetries: 1,
     maxOutputTokens: 8_192,
+    maxTokensField: "max_tokens",
     thinkingLevel: "max",
   });
   const dependencies = createAgentDependenciesFromEnv(env);
@@ -27,7 +28,7 @@ test("legacy DeepSeek environment settings become Pi Agent dependencies", () => 
   assert.equal(dependencies.model.baseUrl, "https://proxy.example.test/v1");
   assert.equal(dependencies.model.reasoning, true);
   assert.equal(dependencies.model.maxTokens, 8_192);
-  assert.equal((dependencies.model.compat as { maxTokensField?: string } | undefined)?.maxTokensField, undefined);
+  assert.equal((dependencies.model.compat as { maxTokensField?: string } | undefined)?.maxTokensField, "max_tokens");
 });
 
 test("proxy token field override is explicit and validated", () => {
