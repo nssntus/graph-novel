@@ -70,7 +70,7 @@ export function createAgentDependenciesFromEnv(
       api: "openai-completions" as const,
       provider: "deepseek",
       baseUrl: config.baseUrl,
-      reasoning: config.thinkingLevel !== "off",
+      reasoning: true,
       input: ["text"] as ("text")[],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,
@@ -78,12 +78,13 @@ export function createAgentDependenciesFromEnv(
       compat: { supportsDeveloperRole: false },
     }),
     baseUrl: config.baseUrl,
-    reasoning: config.thinkingLevel !== "off",
+    reasoning: true,
     maxTokens: Math.min(catalogModel?.maxTokens ?? 16_384, config.maxOutputTokens),
     compat: {
       ...(catalogModel?.compat ?? {}),
       supportsDeveloperRole: false,
       maxTokensField: config.maxTokensField,
+      thinkingFormat: "deepseek",
     },
   };
 

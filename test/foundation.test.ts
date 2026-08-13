@@ -196,7 +196,7 @@ test("long Foundation creates a bounded rolling roadmap without an outline model
   state.creativeTheme = "真相与责任";
   state.targetTotalChapters = 400;
   const full = enhancedFoundationResponses({ totalChapters: 400 });
-  const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+  const responses = [...full.slice(0, 3), full[4]!, full[7]!, full[9]!];
   const prompts: string[] = [];
   let index = 0;
   const result = await runFoundationGeneration(
@@ -212,7 +212,7 @@ test("long Foundation creates a bounded rolling roadmap without an outline model
     new CheckpointStore(root),
   );
   assert.equal(result.status, "awaiting_approval", JSON.stringify(result.state.lastError));
-  assert.equal(index, 8);
+  assert.equal(index, 6);
   assert.equal(state.novelOutline?.planningMode, "rolling");
   assert.equal(state.novelOutline?.chapterOutlines.length, 0);
   assert.deepEqual(state.novelOutline?.roadmapSegments?.map((item) => [item.chapterStart, item.chapterEnd]), [[1, 400]]);
@@ -220,6 +220,7 @@ test("long Foundation creates a bounded rolling roadmap without an outline model
   assert.equal(state.foundationValidation?.passed, true);
   assert.equal(prompts.some((prompt) => prompt.includes("novel_outline.chapterOutlines")), false);
   assert.equal(prompts.some((prompt) => prompt.includes("节奏、伏笔与信息流设计师")), false);
+  assert.equal(prompts.some((prompt) => prompt.includes("人物关系与秘密揭示调度师")), false);
   assert.deepEqual(state.narrativePlan?.revelationPlan.map((item) => [item.factId, item.earliestChapter]), [["fact_secret_father_card", 400]]);
 });
 
@@ -233,7 +234,7 @@ test("Foundation model workload stays bounded when a long project grows to 5000 
     state.creativeTheme = "真相与责任";
     state.targetTotalChapters = totalChapters;
     const full = enhancedFoundationResponses({ totalChapters });
-    const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+    const responses = [...full.slice(0, 3), full[4]!, full[7]!, full[9]!];
     const promptSizes: number[] = [];
     let index = 0;
     const result = await runFoundationGeneration(
@@ -252,8 +253,117 @@ test("Foundation model workload stays bounded when a long project grows to 5000 
     assert.equal(state.novelOutline?.roadmapSegments?.length, 1);
     measurements.push({ calls: index, largestPrompt: Math.max(...promptSizes) });
   }
-  assert.deepEqual(measurements.map((item) => item.calls), [8, 8]);
+  assert.deepEqual(measurements.map((item) => item.calls), [6, 6]);
   assert.ok(Math.abs(measurements[1]!.largestPrompt - measurements[0]!.largestPrompt) < 256, JSON.stringify(measurements));
+});
+
+test("long relationship recovery repairs invalid character references without another model response", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-relationship-recovery-"));
+  const state = createInitialState("relationship-recovery", "Relationship Recovery");
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  const initialResponses = [...full.slice(0, 3), full[4]!, full[7]!, full[9]!];
+  let initialIndex = 0;
+  const store = new CheckpointStore(root);
+  const initial = await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(initialResponses[initialIndex++]!) },
+    store,
+  );
+  assert.equal(initial.status, "awaiting_approval", JSON.stringify(state.lastError));
+
+  state.pendingGate = null;
+  state.workflowPhase = "failed";
+  state.relationshipMap!.secrets[0]!.holders.push("unknown_faction");
+  state.relationshipMap!.secrets[0]!.affectedCharacters.push("unknown_group");
+  recordFoundationDocument(state, "relationship_design", {}, state.relationshipMap);
+  state.foundationValidation = validateFoundationRegistry(state);
+  state.foundationReviewAttempts = 2;
+  state.continuityBaseline!.initialFacts.push({
+    factId: "local_opening_fact", statement: "开篇前已经存在的本地事实", category: "local", visibility: "仅主角可见",
+  });
+  state.continuityBaseline!.initialKnowledge.push({
+    factId: "local_opening_fact", characterId: "char_lin_che", knowledgeLevel: "confirmed",
+    sourceType: "observed", sourceCharacterId: "", evidence: "主角在开篇前亲自确认",
+  });
+  state.continuityBaseline!.initialKnowledge.push({
+    factId: "local_opening_fact", characterId: "char_lin_che", knowledgeLevel: "rumor",
+    sourceType: "observed", sourceCharacterId: "unknown_source", evidence: "无效的非空来源引用",
+  });
+  state.continuityBaseline!.initialKnowledge.push({
+    factId: "local_opening_fact", characterId: "char_lin_che", knowledgeLevel: "rumor",
+    sourceType: "told", sourceCharacterId: "", evidence: "转述认知缺少来源人物",
+  });
+  state.nodes.relationship_design = { status: "failed", attempts: 5, error: "Pi Agent stopped with length" };
+  state.lastError = { nodeKey: "relationship_design", message: "Pi Agent stopped with length", attempt: 5, timestamp: new Date().toISOString() };
+
+  const responses = [full[4]!, full[7]!, full[9]!];
+  const prompts: string[] = [];
+  let index = 0;
+  const resumed = await runFoundationGeneration(
+    state,
+    {
+      runtime: new PiAgentRuntime(), model: model(),
+      streamFn: (_model, request) => {
+        prompts.push(request.systemPrompt ?? "");
+        return streamFor(responses[index++]!);
+      },
+    },
+    store,
+  );
+
+  assert.equal(resumed.status, "awaiting_approval", JSON.stringify(state.lastError));
+  assert.equal(index, 3);
+  assert.equal(prompts.some((prompt) => prompt.includes("人物关系与秘密揭示调度师")), false);
+  assert.equal(state.relationshipMap?.secrets[0]?.holders.includes("unknown_faction"), false);
+  assert.equal(state.relationshipMap?.secrets[0]?.affectedCharacters.includes("unknown_group"), false);
+  assert.equal(state.foundationValidation?.passed, true);
+  assert.equal(state.foundationReviewAttempts, 3, "failed resume preserves the existing loop count before the next review");
+  assert.ok(state.continuityBaseline?.initialKnowledge.some((item) => (
+    item.factId === "local_opening_fact" && item.evidence === "主角在开篇前亲自确认"
+  )));
+  assert.equal(state.continuityBaseline?.initialKnowledge.some((item) => (
+    item.evidence === "无效的非空来源引用" || item.evidence === "转述认知缺少来源人物"
+  )), false);
+});
+
+test("long relationship compilation schedules every canonical secret beyond the old 96-item limit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-relationship-capacity-"));
+  const state = createInitialState("relationship-capacity", "Relationship Capacity");
+  state.targetTotalChapters = 5000;
+  const full = enhancedFoundationResponses({ totalChapters: 5000 });
+  const character = JSON.parse(full[2]!)[0];
+  state.creativeCharter = JSON.parse(full[0]!);
+  state.worldSetting = JSON.parse(full[1]!);
+  state.characters = Array.from({ length: 24 }, (_, characterIndex) => ({
+    ...character,
+    characterId: `character_${characterIndex + 1}`,
+    name: `角色${characterIndex + 1}`,
+    role: characterIndex === 0 ? "protagonist" : "supporting",
+    secrets: Array.from({ length: 8 }, (_, secretIndex) => ({
+      secretId: `secret_${characterIndex + 1}_${secretIndex + 1}`,
+      content: `角色${characterIndex + 1}的秘密${secretIndex + 1}`,
+    })),
+  }));
+  recordFoundationDocument(state, "creative_charter", {}, state.creativeCharter);
+  recordFoundationDocument(state, "world_building", {}, state.worldSetting);
+  recordFoundationDocument(state, "character_design", {}, state.characters);
+  state.nodes.relationship_design = { status: "failed", attempts: 1, error: "Pi Agent stopped with length" };
+  state.lastError = { nodeKey: "relationship_design", message: "Pi Agent stopped with length", attempt: 1, timestamp: new Date().toISOString() };
+
+  const responses = [full[4]!, full[7]!, full[9]!];
+  let index = 0;
+  const result = await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(responses[index++]!) },
+    new CheckpointStore(root),
+  );
+
+  assert.equal(result.status, "awaiting_approval", JSON.stringify(state.lastError));
+  assert.equal(index, 3);
+  assert.equal(state.relationshipMap?.secrets.length, 192);
+  assert.equal(new Set(state.relationshipMap?.secrets.map((secret) => secret.secretId)).size, 192);
+  assert.equal(state.foundationValidation?.passed, true);
 });
 
 test("a failed architecture retry resumes at architecture with compact input and bounded policy", async () => {
@@ -270,8 +380,8 @@ test("a failed architecture retry resumes at architecture with compact input and
       model: { ...model(), reasoning: true },
       streamFn: () => {
         const current = index++;
-        if (current === 4) return streamFor("", "length");
-        return streamFor(full[current]!);
+        if (current === 3) return streamFor("", "length");
+        return streamFor(current < 3 ? full[current]! : full[current + 1]!);
       },
     },
     store,
@@ -285,7 +395,7 @@ test("a failed architecture retry resumes at architecture with compact input and
 
   const prompts: string[] = [];
   const options: Array<{ maxTokens?: number; reasoning?: unknown }> = [];
-  const responses = [full[4]!, full[7]!, full[8]!, full[9]!];
+  const responses = [full[4]!, full[7]!, full[9]!];
   let resumedIndex = 0;
   const resumed = await runFoundationGeneration(
     state,
@@ -301,7 +411,7 @@ test("a failed architecture retry resumes at architecture with compact input and
     store,
   );
   assert.equal(resumed.status, "awaiting_approval", JSON.stringify(state.lastError));
-  assert.equal(resumedIndex, 4);
+  assert.equal(resumedIndex, 3);
   assert.deepEqual(Object.fromEntries(Object.keys(upstreamAttempts).map((key) => [key, state.nodes[key]?.attempts])), upstreamAttempts);
   assert.ok(prompts[0]!.length < 20_000, `architecture prompt is ${prompts[0]!.length} chars`);
   assert.doesNotMatch(prompts[0]!, /foundationRegistry/);
@@ -353,7 +463,7 @@ test("rolling narrative compilation binds collision-free Registry IDs", async ()
     distinguishingFeatures: "离线审计终端",
     accessConstraints: "双人授权",
   });
-  const responses = [full[0]!, JSON.stringify(world), ...full.slice(2, 5), full[7]!, full[8]!, full[9]!];
+  const responses = [full[0]!, JSON.stringify(world), full[2]!, full[4]!, full[7]!, full[9]!];
   let index = 0;
 
   const result = await runFoundationGeneration(
@@ -377,7 +487,7 @@ test("an old failed outline checkpoint resumes through the deterministic roadmap
   state.creativeTheme = "真相与责任";
   state.targetTotalChapters = 400;
   const full = enhancedFoundationResponses({ totalChapters: 400 });
-  const firstResponses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+  const firstResponses = [...full.slice(0, 3), full[4]!, full[7]!, full[9]!];
   let firstIndex = 0;
   const store = new CheckpointStore(root);
   const first = await runFoundationGeneration(
@@ -394,7 +504,7 @@ test("an old failed outline checkpoint resumes through the deterministic roadmap
     currentRange: { start: 29, end: 29 }, chunks: [], lastError: "Pi Agent stopped with length",
   };
   state.nodes.outline_planning = { status: "failed", attempts: 4, error: "Pi Agent stopped with length" };
-  const responses = [full[7]!, full[8]!, full[9]!];
+  const responses = [full[7]!, full[9]!];
   const prompts: string[] = [];
   let index = 0;
   const resumed = await runFoundationGeneration(
@@ -410,7 +520,7 @@ test("an old failed outline checkpoint resumes through the deterministic roadmap
     store,
   );
   assert.equal(resumed.status, "awaiting_approval", JSON.stringify(resumed.state.lastError));
-  assert.equal(index, 3);
+  assert.equal(index, 2);
   assert.equal(resumed.state.novelOutline?.planningMode, "rolling");
   assert.equal(resumed.state.foundationOutlineProgress, null);
   assert.equal(prompts.some((prompt) => prompt.includes("chapterOutlines")), false);
@@ -424,7 +534,7 @@ test("a failed long narrative checkpoint resumes from deterministic narrative co
   state.creativeTheme = "真相与责任";
   state.targetTotalChapters = 400;
   const full = enhancedFoundationResponses({ totalChapters: 400 });
-  const initialResponses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+  const initialResponses = [...full.slice(0, 3), full[4]!, full[7]!, full[9]!];
   let initialIndex = 0;
   const store = new CheckpointStore(root);
   const initial = await runFoundationGeneration(
@@ -440,7 +550,7 @@ test("a failed long narrative checkpoint resumes from deterministic narrative co
   state.lastError = { nodeKey: "narrative_planning", message: "Pi Agent stopped with length", attempt: 2, timestamp: new Date().toISOString() };
   state.narrativePlan = JSON.parse(full[5]!);
 
-  const responses = [full[7]!, full[8]!, full[9]!];
+  const responses = [full[7]!, full[9]!];
   const prompts: string[] = [];
   let index = 0;
   const resumed = await runFoundationGeneration(
@@ -456,7 +566,7 @@ test("a failed long narrative checkpoint resumes from deterministic narrative co
   );
 
   assert.equal(resumed.status, "awaiting_approval", JSON.stringify(resumed.state.lastError));
-  assert.equal(index, 3);
+  assert.equal(index, 2);
   assert.equal(state.nodes.creative_charter?.attempts, charterAttempts);
   assert.equal(state.nodes.narrative_planning?.attempts, 3);
   assert.equal(prompts.some((prompt) => prompt.includes("节奏、伏笔与信息流设计师")), false);
@@ -471,7 +581,7 @@ test("rolling directives resolve chapter obligations without storing per-chapter
   state.creativeTheme = "真相与责任";
   state.targetTotalChapters = 400;
   const full = enhancedFoundationResponses({ totalChapters: 400 });
-  const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+  const responses = [...full.slice(0, 3), full[4]!, full[7]!, full[9]!];
   let index = 0;
   const result = await runFoundationGeneration(
     state,
@@ -810,7 +920,7 @@ test("rolling payoff validation routes derived schedule errors to story architec
   const state = createInitialState("rolling-payoff-owner", "Rolling Payoff Owner");
   state.targetTotalChapters = 400;
   const full = enhancedFoundationResponses({ totalChapters: 400 });
-  const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+  const responses = [...full.slice(0, 3), full[4]!, full[7]!, full[9]!];
   let index = 0;
   await runFoundationGeneration(
     state,
@@ -1107,7 +1217,7 @@ test("long legacy Foundation upgrade switches to a rolling roadmap without an ou
   const backupFile = await store.backup(state, "pre-foundation-upgrade");
   beginLegacyFoundationUpgrade(state, backupFile);
 
-  const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+  const responses = [...full.slice(0, 3), full[4]!, full[7]!, full[9]!];
   const prompts: string[] = [];
   let index = 0;
   const result = await runFoundationUpgrade(
@@ -1123,7 +1233,7 @@ test("long legacy Foundation upgrade switches to a rolling roadmap without an ou
   );
 
   assert.equal(result.status, "awaiting_approval", JSON.stringify(state.lastError));
-  assert.equal(index, 8);
+  assert.equal(index, 6);
   assert.equal(state.novelOutline?.planningMode, "rolling");
   assert.equal(state.novelOutline?.chapterOutlines.length, 0);
   assert.deepEqual(state.novelOutline?.roadmapSegments?.map((item) => [item.chapterStart, item.chapterEnd]), [[1, 400]]);

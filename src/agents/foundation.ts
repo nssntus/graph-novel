@@ -26,6 +26,7 @@ import type {
   FoundationRewriteTarget,
   NarrativePlan,
   NovelOutline,
+  RelationshipMap,
   StoryArchitecture,
   WorldSetting,
 } from "../state/foundation.js";
@@ -200,9 +201,7 @@ export function createFoundationEngine(
     contractedNode(CHARACTER_NODE, "角色设计师", [CHARACTER_CONTRACT], parseCharacters, (state) => ({
       creativeCharter: state.creativeCharter, worldSetting: compactWorld(state),
     }), (state, value) => { state.characters = value; }, dependencies, options.upgradeSource, "JSON 数组"),
-    contractedNode(RELATIONSHIP_NODE, "人物关系与秘密揭示调度师", RELATIONSHIP_CONTRACT, parseRelationshipMap, (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: compactWorld(state), characters: compactCharacters(state),
-    }), (state, value) => { state.relationshipMap = value; }, dependencies, options.upgradeSource),
+    relationshipNode(dependencies, options.upgradeSource),
     architectureNode(dependencies, options.upgradeSource),
     narrativeNode(dependencies, options.upgradeSource),
     outlineNode(dependencies, options.upgradeSource),
@@ -210,11 +209,7 @@ export function createFoundationEngine(
       creativeCharter: state.creativeCharter, characters: compactCharacterVoices(state),
       storyArchitecture: state.storyArchitecture, outlineDigest: compactOutline(state.novelOutline),
     }), (state, value) => { state.styleGuide = value; }, dependencies, options.upgradeSource),
-    contractedNode(BASELINE_NODE, "开篇连续性建档员", BASELINE_CONTRACT, (text, state) => (
-      alignBaselineKnowledge(parseContinuityBaseline(text), state)
-    ), (state) => ({
-      ...baselinePlanningInput(state),
-    }), (state, value) => { state.continuityBaseline = value; }, dependencies, options.upgradeSource),
+    baselineNode(dependencies, options.upgradeSource),
     {
       key: VALIDATION_NODE,
       async run(context) {
@@ -302,9 +297,12 @@ export async function runFoundationGeneration(
 ): Promise<GraphRunResult> {
   const startNode = foundationGenerationStartNode(state);
   const resumeOutline = startNode === OUTLINE_NODE;
-  state.foundationReview = null;
-  state.foundationReviewAttempts = 0;
-  state.foundationValidation = null;
+  const resumingFailure = Boolean(state.lastError) && startNode !== CHARTER_NODE;
+  if (!resumingFailure) {
+    state.foundationReview = null;
+    state.foundationReviewAttempts = 0;
+    state.foundationValidation = null;
+  }
   state.foundationSnapshot = null;
   state.foundationOutlineProgress = resumeOutline ? state.foundationOutlineProgress : null;
   return createFoundationEngine(dependencies, checkpoints).run(state, startNode, sink);
@@ -504,6 +502,45 @@ function contractedNode<T>(
   };
 }
 
+function relationshipNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  const generated = contractedNode(
+    RELATIONSHIP_NODE,
+    "人物关系与秘密揭示调度师",
+    RELATIONSHIP_CONTRACT,
+    parseRelationshipMap,
+    (state) => ({
+      creativeCharter: state.creativeCharter,
+      worldSetting: compactWorld(state),
+      characters: compactCharacters(state),
+    }),
+    (state, value) => { state.relationshipMap = value; },
+    dependencies,
+    upgradeSource,
+  );
+  return {
+    key: RELATIONSHIP_NODE,
+    async run(context) {
+      if (context.state.targetTotalChapters <= OUTLINE_BATCH_THRESHOLD) {
+        return generated.run(context);
+      }
+      const nodeInput = {
+        planningMode: "deterministic",
+        targetTotalChapters: context.state.targetTotalChapters,
+        characterDocumentHash: context.state.foundationDocuments[CHARACTER_NODE]?.outputHash ?? null,
+        existingRelationshipHash: context.state.relationshipMap ? hashValue(context.state.relationshipMap) : null,
+        repairIssues: revisionContext(context.state, RELATIONSHIP_NODE),
+      };
+      const value = compileLongRelationshipMap(context.state);
+      context.state.relationshipMap = value;
+      recordFoundationDocument(context.state, RELATIONSHIP_NODE, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
 function architectureNode(
   dependencies: FoundationAgentDependencies,
   upgradeSource?: LegacyFoundationSource,
@@ -580,6 +617,41 @@ function narrativeNode(
       const value = normalizeNarrativePlanIds(buildRollingNarrativePlan(context.state), context.state);
       context.state.narrativePlan = value;
       recordFoundationDocument(context.state, NARRATIVE_NODE, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function baselineNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  const generated = contractedNode(
+    BASELINE_NODE,
+    "开篇连续性建档员",
+    BASELINE_CONTRACT,
+    (text, state) => alignBaselineKnowledge(parseContinuityBaseline(text), state),
+    baselinePlanningInput,
+    (state, value) => { state.continuityBaseline = value; },
+    dependencies,
+    upgradeSource,
+  );
+  return {
+    key: BASELINE_NODE,
+    async run(context) {
+      if (context.state.targetTotalChapters <= OUTLINE_BATCH_THRESHOLD) {
+        return generated.run(context);
+      }
+      const nodeInput = {
+        planningMode: "deterministic",
+        worldDocumentHash: context.state.foundationDocuments[WORLD_NODE]?.outputHash ?? null,
+        characterDocumentHash: context.state.foundationDocuments[CHARACTER_NODE]?.outputHash ?? null,
+        relationshipDocumentHash: context.state.foundationDocuments[RELATIONSHIP_NODE]?.outputHash ?? null,
+        narrativeDocumentHash: context.state.foundationDocuments[NARRATIVE_NODE]?.outputHash ?? null,
+      };
+      const value = compileLongContinuityBaseline(context.state);
+      context.state.continuityBaseline = value;
+      recordFoundationDocument(context.state, BASELINE_NODE, nodeInput, value);
       return { status: "completed" };
     },
   };
@@ -741,6 +813,94 @@ function compactCharacters(state: GraphNovelState) {
   }));
 }
 
+function compileLongRelationshipMap(state: GraphNovelState): RelationshipMap {
+  const characters = state.characters.filter((character) => Boolean(character.characterId));
+  const characterIds = new Set(characters.map((character) => character.characterId!));
+  const existing = state.relationshipMap;
+  const relationships = (existing?.relationships ?? [])
+    .filter((relationship) => (
+      relationship.fromCharacterId
+      && relationship.toCharacterId
+      && relationship.fromCharacterId !== relationship.toCharacterId
+      && characterIds.has(relationship.fromCharacterId)
+      && characterIds.has(relationship.toCharacterId)
+    ))
+    .map((relationship) => ({
+      fromCharacterId: relationship.fromCharacterId,
+      toCharacterId: relationship.toCharacterId,
+      nature: relationship.nature,
+      currentState: relationship.currentState,
+      tension: relationship.tension,
+      hiddenInformation: relationship.hiddenInformation,
+    }));
+  if (relationships.length === 0 && characters.length > 1) {
+    const protagonist = characters.find((character) => /protagonist|主角/i.test(character.role)) ?? characters[0]!;
+    for (const character of characters) {
+      if (character.characterId === protagonist.characterId) continue;
+      relationships.push({
+        fromCharacterId: protagonist.characterId,
+        toCharacterId: character.characterId,
+        nature: relationshipNature(character),
+        currentState: `${protagonist.name}与${character.name}围绕各自目标形成尚未定型的关系`,
+        tension: clipText(character.fear || character.motivation, 180),
+        hiddenInformation: character.secrets?.length
+          ? `双方尚未共享与${character.secrets.map((secret) => secret.content).join("；")}相关的完整信息`
+          : "双方尚未完全掌握彼此的目标、底线和可验证证据",
+      });
+    }
+  }
+
+  const existingSecrets = new Map((existing?.secrets ?? []).map((secret) => [secret.secretId, secret]));
+  const canonicalSecrets = characters.flatMap((character) => (
+    (character.secrets ?? []).map((secret) => ({ character, secret }))
+  ));
+  const protagonistId = (characters.find((character) => /protagonist|主角/i.test(character.role)) ?? characters[0])?.characterId;
+  const secrets = canonicalSecrets.map(({ character, secret }, index) => {
+    const previous = existingSecrets.get(secret.secretId);
+    const holders = uniqueIds([
+      ...(previous?.holders ?? []).filter((id) => characterIds.has(id)),
+      character.characterId,
+    ]);
+    const affectedCharacters = uniqueIds(
+      (previous?.affectedCharacters ?? []).filter((id) => characterIds.has(id)),
+    );
+    if (affectedCharacters.length === 0) {
+      affectedCharacters.push(...uniqueIds([protagonistId, character.characterId]));
+    }
+    return {
+      secretId: secret.secretId,
+      holders,
+      affectedCharacters,
+      plannedReveal: previous?.plannedReveal?.trim()
+        || `通过相关人物的选择、证据与关系冲突逐步揭示“${clipText(secret.content, 120)}”`,
+      plannedRevealChapter: validRevealChapter(previous?.plannedRevealChapter, state.targetTotalChapters)
+        ?? scheduledRevealChapter(index, canonicalSecrets.length, state.targetTotalChapters),
+    };
+  });
+  return { relationships, secrets };
+}
+
+function relationshipNature(character: Character): string {
+  if (/反派|敌|antagonist/i.test(character.role)) return "目标冲突与利益对立";
+  if (/父|母|兄|弟|姐|妹|亲|family/i.test(character.role)) return "亲缘、责任与未解事实交织";
+  if (/盟|友|伙伴|同伴|ally/i.test(character.role)) return "合作关系与信任成长";
+  return "目标、利益与信息不对称形成的关联";
+}
+
+function scheduledRevealChapter(index: number, count: number, totalChapters: number): number {
+  if (count <= 1) return totalChapters;
+  const progress = 0.15 + (0.75 * index) / (count - 1);
+  return Math.max(1, Math.min(totalChapters, Math.round(totalChapters * progress)));
+}
+
+function validRevealChapter(value: number | undefined, totalChapters: number): number | null {
+  return Number.isSafeInteger(value) && value! >= 1 && value! <= totalChapters ? value! : null;
+}
+
+function uniqueIds(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
 function compactCharacterVoices(state: GraphNovelState) {
   return state.characters.map(({ characterId, name, role, voice }) => ({ characterId, name, role, voice }));
 }
@@ -749,10 +909,81 @@ function architecturePlanningInput(state: GraphNovelState) {
   return {
     creativeCharter: state.creativeCharter,
     worldSetting: compactWorld(state),
-    characters: compactCharacters(state),
-    relationshipMap: state.relationshipMap,
+    characters: architectureCharacterDigest(state),
+    relationshipMap: relationshipDigest(state),
     targetTotalChapters: state.targetTotalChapters,
   };
+}
+
+function architectureCharacterDigest(state: GraphNovelState) {
+  return state.characters.map((character) => ({
+    characterId: character.characterId,
+    name: character.name,
+    role: clipText(character.role, 120),
+    motivation: clipText(character.motivation, 160),
+    arcDescription: clipText(character.arcDescription, 160),
+    secretCount: character.secrets?.length ?? 0,
+  }));
+}
+
+function relationshipDigest(state: GraphNovelState) {
+  const relationshipMap = state.relationshipMap;
+  return {
+    relationshipCount: relationshipMap?.relationships.length ?? 0,
+    secretCount: relationshipMap?.secrets.length ?? 0,
+    relationships: (relationshipMap?.relationships ?? []).slice(0, 24).map((relationship) => ({
+      fromCharacterId: relationship.fromCharacterId,
+      toCharacterId: relationship.toCharacterId,
+      nature: clipText(relationship.nature, 100),
+      tension: clipText(relationship.tension, 140),
+    })),
+    revealSamples: sampleEvenly(relationshipMap?.secrets ?? [], 12).map((secret) => ({
+      secretId: secret.secretId,
+      holders: secret.holders.slice(0, 4),
+      affectedCharacters: secret.affectedCharacters.slice(0, 4),
+      plannedRevealChapter: secret.plannedRevealChapter,
+    })),
+  };
+}
+
+function narrativeDigest(state: GraphNovelState) {
+  const narrative = state.narrativePlan;
+  return narrative ? {
+    pacingPrinciples: narrative.pacingPrinciples.slice(0, 12).map((item) => clipText(item, 180)),
+    payoffSchedule: narrative.payoffSchedule.slice(0, 12),
+    foreshadowingCount: narrative.foreshadowingPlan.length,
+    revelationCount: narrative.revelationPlan.length,
+    foreshadowingSamples: sampleEvenly(narrative.foreshadowingPlan, 12),
+    revelationSamples: sampleEvenly(narrative.revelationPlan, 12),
+  } : null;
+}
+
+function baselineDigest(state: GraphNovelState) {
+  const baseline = state.continuityBaseline;
+  return baseline ? {
+    storyTime: baseline.storyTime,
+    locatedCharacterCount: Object.keys(baseline.characterLocations).length,
+    conditionCount: Object.keys(baseline.characterConditions).length,
+    resourceCount: Object.keys(baseline.resources).length,
+    initialFactCount: baseline.initialFacts.length,
+    initialKnowledgeCount: baseline.initialKnowledge.length,
+    initialFactSamples: sampleEvenly(baseline.initialFacts, 12),
+    initialKnowledgeSamples: sampleEvenly(baseline.initialKnowledge, 12),
+  } : null;
+}
+
+function registryDigest(state: GraphNovelState) {
+  const entries = state.foundationRegistry?.entries ?? [];
+  const counts = entries.reduce<Record<string, number>>((result, entry) => {
+    result[entry.kind] = (result[entry.kind] ?? 0) + 1;
+    return result;
+  }, {});
+  return { counts, samples: sampleEvenly(entries, 16).map(({ id, kind, label }) => ({ id, kind, label: clipText(label, 120) })) };
+}
+
+function sampleEvenly<T>(items: T[], maximum: number): T[] {
+  if (items.length <= maximum) return [...items];
+  return Array.from({ length: maximum }, (_, index) => items[Math.floor((index * (items.length - 1)) / (maximum - 1))]!);
 }
 
 function compileStoryArchitecture(intent: StoryArchitectureIntent, state: GraphNovelState): StoryArchitecture {
@@ -858,14 +1089,14 @@ function foundationReviewInput(state: GraphNovelState, upgradeSource?: LegacyFou
     targetTotalChapters: state.targetTotalChapters,
     creativeCharter: state.creativeCharter,
     worldSetting: compactWorld(state),
-    characters: compactCharacters(state),
-    relationshipMap: state.relationshipMap,
+    characters: architectureCharacterDigest(state),
+    relationshipMap: relationshipDigest(state),
     storyArchitecture: state.storyArchitecture,
-    narrativePlan: state.narrativePlan,
+    narrativePlan: narrativeDigest(state),
     outlineDigest: reviewOutlineDigest(state.novelOutline),
     styleGuide: state.styleGuide,
-    continuityBaseline: state.continuityBaseline,
-    registryCatalog: (state.foundationRegistry?.entries ?? []).map(({ id, kind, label }) => ({ id, kind, label })),
+    continuityBaseline: baselineDigest(state),
+    registrySummary: registryDigest(state),
     deterministicValidation: state.foundationValidation,
     ...(upgradeSource ? { legacyUpgradeReference: legacyReviewReference(upgradeSource) } : {}),
   };
@@ -939,6 +1170,78 @@ function baselinePlanningInput(state: GraphNovelState) {
     })),
     openingFacts,
     openingRoadmap: (state.novelOutline?.roadmapSegments ?? []).slice(0, 1),
+  };
+}
+
+function compileLongContinuityBaseline(state: GraphNovelState): ContinuityBaseline {
+  const locationIds = state.worldSetting?.keyLocations?.map((location) => location.locationId) ?? [];
+  const locationIdSet = new Set(locationIds);
+  const defaultLocation = locationIds[0];
+  const characterIds = new Set(state.characters.flatMap((character) => character.characterId ? [character.characterId] : []));
+  const existing = state.continuityBaseline;
+  const characterLocations = Object.fromEntries(Object.entries(existing?.characterLocations ?? {}).filter(
+    ([characterId, locationId]) => characterIds.has(characterId) && locationIdSet.has(locationId),
+  ));
+  const characterConditions = Object.fromEntries(Object.entries(existing?.characterConditions ?? {}).filter(
+    ([characterId]) => characterIds.has(characterId),
+  ));
+  const resources = Object.fromEntries(Object.entries(existing?.resources ?? {}).filter(
+    ([characterId]) => characterIds.has(characterId),
+  ));
+  for (const character of state.characters) {
+    if (!character.characterId) continue;
+    if (!characterLocations[character.characterId] && defaultLocation) characterLocations[character.characterId] = defaultLocation;
+    characterConditions[character.characterId] ??= `故事开篇时保持“${clipText(character.personality, 120)}”的常态，核心压力来自“${clipText(character.fear || character.motivation, 120)}”`;
+    resources[character.characterId] ??= `仅拥有角色设定中已经明确的能力与资源：${clipText((character.abilities ?? []).join("；") || "无额外资源", 180)}`;
+  }
+  const openingFacts = (state.narrativePlan?.revelationPlan ?? []).filter((fact) => (
+    fact.knownInitiallyBy.length > 0 || fact.earliestChapter <= 1
+  ));
+  const openingFactIds = new Set(openingFacts.map((fact) => fact.factId));
+  const existingFacts = new Map((existing?.initialFacts ?? []).map((fact) => [fact.factId, fact]));
+  const validFactIds = new Set([
+    ...(existing?.initialFacts ?? []).map((fact) => fact.factId),
+    ...(state.narrativePlan?.revelationPlan ?? []).map((fact) => fact.factId),
+    ...state.narrativeFacts.map((fact) => fact.factId),
+  ]);
+  const validExistingKnowledge = (existing?.initialKnowledge ?? []).filter((item) => (
+    item.characterId
+    && characterIds.has(item.characterId)
+    && validFactIds.has(item.factId)
+    && (!item.sourceCharacterId || characterIds.has(item.sourceCharacterId))
+    && (item.sourceType !== "told" || Boolean(item.sourceCharacterId && characterIds.has(item.sourceCharacterId)))
+  ));
+  const existingKnowledge = new Map(validExistingKnowledge
+    .map((item) => [`${item.factId}\u0000${item.characterId}`, item]));
+  const retainedKnowledge = validExistingKnowledge.filter((item) => !openingFactIds.has(item.factId));
+  return {
+    storyTime: existing?.storyTime?.trim() || "故事开篇，第一章事件发生前",
+    characterLocations,
+    characterConditions,
+    resources,
+    initialFacts: [
+      ...(existing?.initialFacts ?? []).filter((fact) => !openingFactIds.has(fact.factId)),
+      ...openingFacts.map((fact) => ({
+        factId: fact.factId,
+        statement: fact.information,
+        category: existingFacts.get(fact.factId)?.category ?? "foundation",
+        visibility: existingFacts.get(fact.factId)?.visibility
+          ?? (fact.knownInitiallyBy.length > 0 ? "仅初始知情角色可确认" : "第一章可通过行动验证"),
+      })),
+    ],
+    initialKnowledge: [
+      ...retainedKnowledge,
+      ...openingFacts.flatMap((fact) => fact.knownInitiallyBy.map((characterId) => (
+        existingKnowledge.get(`${fact.factId}\u0000${characterId}`) ?? {
+          factId: fact.factId,
+          characterId,
+          knowledgeLevel: "confirmed",
+          sourceType: "observed",
+          sourceCharacterId: "",
+          evidence: "角色设定与关系揭示计划明确该角色在故事开篇前已掌握完整事实",
+        }
+      ))),
+    ],
   };
 }
 
@@ -1327,6 +1630,7 @@ function alignBaselineKnowledge(
   const initialKnowledge = cloneValue(baseline.initialKnowledge).filter((item) => (
     factIds.has(item.factId)
       && Boolean(item.characterId && characterIds.has(item.characterId))
+      && (!item.sourceCharacterId || characterIds.has(item.sourceCharacterId))
       && (item.sourceType !== "told" || Boolean(item.sourceCharacterId && characterIds.has(item.sourceCharacterId)))
       && (!plannedFactPlans.has(item.factId) || plannedFactPlans.get(item.factId)!.knownInitiallyBy.includes(item.characterId!))
   ));
