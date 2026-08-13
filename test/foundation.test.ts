@@ -169,7 +169,7 @@ test("long Foundation creates a bounded rolling roadmap without an outline model
   state.creativeTheme = "真相与责任";
   state.targetTotalChapters = 400;
   const full = enhancedFoundationResponses({ totalChapters: 400 });
-  const responses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+  const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
   const prompts: string[] = [];
   let index = 0;
   const result = await runFoundationGeneration(
@@ -185,13 +185,15 @@ test("long Foundation creates a bounded rolling roadmap without an outline model
     new CheckpointStore(root),
   );
   assert.equal(result.status, "awaiting_approval", JSON.stringify(result.state.lastError));
-  assert.equal(index, 9);
+  assert.equal(index, 8);
   assert.equal(state.novelOutline?.planningMode, "rolling");
   assert.equal(state.novelOutline?.chapterOutlines.length, 0);
   assert.deepEqual(state.novelOutline?.roadmapSegments?.map((item) => [item.chapterStart, item.chapterEnd]), [[1, 400]]);
   assert.equal(state.foundationOutlineProgress, null);
   assert.equal(state.foundationValidation?.passed, true);
   assert.equal(prompts.some((prompt) => prompt.includes("novel_outline.chapterOutlines")), false);
+  assert.equal(prompts.some((prompt) => prompt.includes("节奏、伏笔与信息流设计师")), false);
+  assert.deepEqual(state.narrativePlan?.revelationPlan.map((item) => [item.factId, item.earliestChapter]), [["fact_secret_father_card", 400]]);
 });
 
 test("Foundation model workload stays bounded when a long project grows to 5000 chapters", async () => {
@@ -204,7 +206,7 @@ test("Foundation model workload stays bounded when a long project grows to 5000 
     state.creativeTheme = "真相与责任";
     state.targetTotalChapters = totalChapters;
     const full = enhancedFoundationResponses({ totalChapters });
-    const responses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+    const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
     const promptSizes: number[] = [];
     let index = 0;
     const result = await runFoundationGeneration(
@@ -223,8 +225,42 @@ test("Foundation model workload stays bounded when a long project grows to 5000 
     assert.equal(state.novelOutline?.roadmapSegments?.length, 1);
     measurements.push({ calls: index, largestPrompt: Math.max(...promptSizes) });
   }
-  assert.deepEqual(measurements.map((item) => item.calls), [9, 9]);
+  assert.deepEqual(measurements.map((item) => item.calls), [8, 8]);
   assert.ok(Math.abs(measurements[1]!.largestPrompt - measurements[0]!.largestPrompt) < 256, JSON.stringify(measurements));
+});
+
+test("rolling narrative compilation binds collision-free Registry IDs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-rolling-id-collision-"));
+  const state = createInitialState("rolling-id-collision", "Rolling ID Collision");
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  const world = JSON.parse(full[1]!) as any;
+  world.rules.push({
+    ruleId: "fact_secret_father_card",
+    statement: "权限卡必须登记",
+    consequence: "未登记会触发审计",
+  });
+  world.keyLocations.push({
+    locationId: "foreshadow_secret_father_card",
+    name: "权限档案室",
+    roleInStory: "保存权限记录",
+    distinguishingFeatures: "离线审计终端",
+    accessConstraints: "双人授权",
+  });
+  const responses = [full[0]!, JSON.stringify(world), ...full.slice(2, 5), full[7]!, full[8]!, full[9]!];
+  let index = 0;
+
+  const result = await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(responses[index++]!) },
+    new CheckpointStore(root),
+  );
+
+  assert.equal(result.status, "awaiting_approval", JSON.stringify(state.lastError));
+  assert.equal(state.foundationValidation?.passed, true);
+  assert.equal(state.narrativePlan?.foreshadowingPlan[0]?.id, "foreshadow_secret_father_card_2");
+  assert.equal(state.narrativePlan?.revelationPlan[0]?.factId, "fact_secret_father_card_2");
+  assert.equal(state.foundationValidation?.issues.some((issue) => issue.code === "duplicate_id"), false);
 });
 
 test("an old failed outline checkpoint resumes through the deterministic roadmap", async () => {
@@ -235,7 +271,7 @@ test("an old failed outline checkpoint resumes through the deterministic roadmap
   state.creativeTheme = "真相与责任";
   state.targetTotalChapters = 400;
   const full = enhancedFoundationResponses({ totalChapters: 400 });
-  const firstResponses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+  const firstResponses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
   let firstIndex = 0;
   const store = new CheckpointStore(root);
   const first = await runFoundationGeneration(
@@ -274,6 +310,53 @@ test("an old failed outline checkpoint resumes through the deterministic roadmap
   assert.equal(prompts.some((prompt) => prompt.includes("chapterOutlines")), false);
 });
 
+test("a failed long narrative checkpoint resumes from deterministic narrative compilation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-narrative-resume-"));
+  const state = createInitialState("foundation-narrative-resume", "Foundation Narrative Resume");
+  state.creativeGenre = "都市科幻";
+  state.creativePremise = "维修员追查海上城秘密";
+  state.creativeTheme = "真相与责任";
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  const initialResponses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+  let initialIndex = 0;
+  const store = new CheckpointStore(root);
+  const initial = await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(initialResponses[initialIndex++]!) },
+    store,
+  );
+  assert.equal(initial.status, "awaiting_approval");
+  const charterAttempts = state.nodes.creative_charter?.attempts;
+  state.pendingGate = null;
+  state.workflowPhase = "failed";
+  state.nodes.narrative_planning = { status: "failed", attempts: 2, error: "Pi Agent stopped with length" };
+  state.lastError = { nodeKey: "narrative_planning", message: "Pi Agent stopped with length", attempt: 2, timestamp: new Date().toISOString() };
+  state.narrativePlan = JSON.parse(full[5]!);
+
+  const responses = [full[7]!, full[8]!, full[9]!];
+  const prompts: string[] = [];
+  let index = 0;
+  const resumed = await runFoundationGeneration(
+    state,
+    {
+      runtime: new PiAgentRuntime(), model: model(),
+      streamFn: (_model, request) => {
+        prompts.push(`${request.systemPrompt ?? ""}\n${JSON.stringify(request.messages ?? null)}`);
+        return streamFor(responses[index++]!);
+      },
+    },
+    store,
+  );
+
+  assert.equal(resumed.status, "awaiting_approval", JSON.stringify(resumed.state.lastError));
+  assert.equal(index, 3);
+  assert.equal(state.nodes.creative_charter?.attempts, charterAttempts);
+  assert.equal(state.nodes.narrative_planning?.attempts, 3);
+  assert.equal(prompts.some((prompt) => prompt.includes("节奏、伏笔与信息流设计师")), false);
+  assert.deepEqual(state.narrativePlan?.revelationPlan.map((item) => [item.factId, item.earliestChapter]), [["fact_secret_father_card", 400]]);
+});
+
 test("rolling directives resolve chapter obligations without storing per-chapter outlines", async () => {
   const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-rolling-directive-"));
   const state = createInitialState("foundation-rolling-directive", "Foundation Rolling Directive");
@@ -282,7 +365,7 @@ test("rolling directives resolve chapter obligations without storing per-chapter
   state.creativeTheme = "真相与责任";
   state.targetTotalChapters = 400;
   const full = enhancedFoundationResponses({ totalChapters: 400 });
-  const responses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+  const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
   let index = 0;
   const result = await runFoundationGeneration(
     state,
@@ -294,14 +377,15 @@ test("rolling directives resolve chapter obligations without storing per-chapter
   const opening = buildContinuityContext(state, 1).targetOutline;
   const middle = buildContinuityContext(state, 200).targetOutline;
   const ending = buildContinuityContext(state, 400).targetOutline;
-  assert.deepEqual(opening?.foreshadowingToPlant, ["old_badge"]);
-  assert.deepEqual(opening?.revealedFactIds, ["fact_signal_exists"]);
+  assert.deepEqual(opening?.foreshadowingToPlant, []);
+  assert.deepEqual(opening?.revealedFactIds, []);
   assert.deepEqual(middle?.storyArcIds, ["arc_anomaly_echo"]);
   assert.notEqual(middle?.payoff, "揭露协议来源");
   assert.deepEqual(middle?.involvedCharacterIds, ["char_lin_che"]);
-  assert.deepEqual(ending?.foreshadowingToPayOff, ["old_badge"]);
-  assert.equal(ending?.payoff, "揭露协议来源");
+  assert.deepEqual(ending?.foreshadowingToPayOff, ["foreshadow_secret_father_card"]);
+  assert.equal(ending?.payoff, "真相被公开");
   assert.deepEqual(ending?.revealedSecretIds, ["secret_father_card"]);
+  assert.deepEqual(ending?.revealedFactIds, ["fact_secret_father_card"]);
   assert.equal(state.novelOutline?.chapterOutlines.length, 0);
 });
 
@@ -543,6 +627,97 @@ test("Foundation validation requires reveal, foreshadowing, and initial knowledg
   assert.ok(validation.issues.some((issue) => issue.code === "initial_knowledge_missing"));
   assert.ok(validation.issues.some((issue) => issue.code === "secret_fact_reveal_mismatch" && issue.target === "relationship_design"));
   assert.ok(validation.issues.some((issue) => issue.code === "unknown_causal_fact" && issue.target === "outline_planning"));
+});
+
+test("Foundation Registry treats a matching baseline fact as a reference and rejects conflicting content", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-fact-reference-"));
+  const state = createInitialState("fact-reference", "Fact Reference");
+  state.targetTotalChapters = 12;
+  const responses = enhancedFoundationResponses();
+  let index = 0;
+  await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(responses[index++]!) },
+    new CheckpointStore(root),
+  );
+  state.continuityBaseline!.initialFacts.push({
+    factId: "fact_signal_exists",
+    statement: "旧港存在异常信号",
+    category: "plot",
+    visibility: "林澈可验证",
+  });
+  recordFoundationDocument(state, "continuity_baseline", {}, state.continuityBaseline);
+
+  const matching = validateFoundationRegistry(state);
+  assert.equal(matching.issues.some((issue) => issue.code === "duplicate_id" && issue.path.includes("initialFacts")), false);
+  assert.equal(matching.issues.some((issue) => issue.code === "fact_definition_mismatch"), false);
+
+  state.continuityBaseline!.initialFacts.at(-1)!.statement = "旧港不存在异常信号";
+  recordFoundationDocument(state, "continuity_baseline", {}, state.continuityBaseline);
+  const conflicting = validateFoundationRegistry(state);
+  assert.ok(conflicting.issues.some((issue) => issue.code === "fact_definition_mismatch" && issue.target === "continuity_baseline"));
+});
+
+test("Foundation generation rewrites a baseline fact that conflicts with the narrative definition", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-baseline-fact-conflict-"));
+  const state = createInitialState("baseline-fact-conflict", "Baseline Fact Conflict");
+  state.targetTotalChapters = 12;
+  const full = enhancedFoundationResponses();
+  const conflictingBaseline = JSON.parse(full[8]!) as any;
+  conflictingBaseline.initialFacts.push({
+    factId: "fact_signal_exists",
+    statement: "旧港不存在异常信号",
+    category: "plot",
+    visibility: "林澈可验证",
+  });
+  const correctedBaseline = JSON.parse(full[8]!) as any;
+  correctedBaseline.initialFacts.push({
+    factId: "fact_signal_exists",
+    statement: "  旧港存在异常信号  ",
+    category: "plot",
+    visibility: "林澈可验证",
+  });
+  const responses = [
+    ...full.slice(0, 8),
+    JSON.stringify(conflictingBaseline),
+    JSON.stringify(correctedBaseline),
+    full[9]!,
+  ];
+  let index = 0;
+
+  const result = await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(responses[index++]!) },
+    new CheckpointStore(root),
+  );
+
+  assert.equal(result.status, "awaiting_approval", JSON.stringify(state.lastError));
+  assert.equal(state.nodes.continuity_baseline?.attempts, 2);
+  assert.ok(state.executionEvents.some((event) => event.type === "route_selected"
+    && event.reason === "foundation_validation_rewrite_continuity_baseline"));
+  assert.equal(state.continuityBaseline?.initialFacts.at(-1)?.statement, "旧港存在异常信号");
+  assert.equal(state.foundationValidation?.passed, true);
+});
+
+test("rolling payoff validation routes derived schedule errors to story architecture", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-rolling-payoff-owner-"));
+  const state = createInitialState("rolling-payoff-owner", "Rolling Payoff Owner");
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
+  let index = 0;
+  await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(responses[index++]!) },
+    new CheckpointStore(root),
+  );
+  state.narrativePlan!.payoffSchedule[0]!.chapterRange = "1-401";
+  recordFoundationDocument(state, "narrative_planning", {}, state.narrativePlan);
+
+  const validation = validateFoundationRegistry(state);
+
+  assert.ok(validation.issues.some((issue) => issue.code === "payoff_range" && issue.target === "story_architecture"));
+  assert.equal(validation.issues.some((issue) => issue.code === "payoff_range" && issue.target === "narrative_planning"), false);
 });
 
 test("Foundation validation detects untracked manual changes by document hash", async () => {
@@ -826,7 +1001,7 @@ test("long legacy Foundation upgrade switches to a rolling roadmap without an ou
   const backupFile = await store.backup(state, "pre-foundation-upgrade");
   beginLegacyFoundationUpgrade(state, backupFile);
 
-  const responses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+  const responses = [...full.slice(0, 5), full[7]!, full[8]!, full[9]!];
   const prompts: string[] = [];
   let index = 0;
   const result = await runFoundationUpgrade(
@@ -842,7 +1017,7 @@ test("long legacy Foundation upgrade switches to a rolling roadmap without an ou
   );
 
   assert.equal(result.status, "awaiting_approval", JSON.stringify(state.lastError));
-  assert.equal(index, 9);
+  assert.equal(index, 8);
   assert.equal(state.novelOutline?.planningMode, "rolling");
   assert.equal(state.novelOutline?.chapterOutlines.length, 0);
   assert.deepEqual(state.novelOutline?.roadmapSegments?.map((item) => [item.chapterStart, item.chapterEnd]), [[1, 400]]);

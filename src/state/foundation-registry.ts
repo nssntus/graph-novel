@@ -110,7 +110,10 @@ export function buildFoundationRegistry(state: GraphNovelState): FoundationRegis
   state.storyArchitecture?.storyArcs.forEach((item, index) => add(item.arcId, "story_arc", "story_architecture", `storyArchitecture.storyArcs[${index}]`, item.name));
   state.narrativePlan?.foreshadowingPlan.forEach((item, index) => add(item.id, "foreshadowing", "narrative_planning", `narrativePlan.foreshadowingPlan[${index}]`, item.description));
   state.narrativePlan?.revelationPlan.forEach((item, index) => add(item.factId, "fact", "narrative_planning", `narrativePlan.revelationPlan[${index}]`, item.information));
-  state.continuityBaseline?.initialFacts.forEach((item, index) => add(item.factId, "fact", "continuity_baseline", `continuityBaseline.initialFacts[${index}]`, item.statement));
+  const plannedFactIds = new Set((state.narrativePlan?.revelationPlan ?? []).map((item) => item.factId));
+  state.continuityBaseline?.initialFacts.forEach((item, index) => {
+    if (!plannedFactIds.has(item.factId)) add(item.factId, "fact", "continuity_baseline", `continuityBaseline.initialFacts[${index}]`, item.statement);
+  });
   entries.sort((left, right) => left.id.localeCompare(right.id) || left.path.localeCompare(right.path));
   return { version: 1, entries, registryHash: stableHash(entries) };
 }
@@ -184,19 +187,21 @@ export function validateFoundationRegistry(state: GraphNovelState): FoundationVa
     issue(issues, "duplicate_character_voice_source", "style_design", "styleGuide.characterVoices", "人物声音只能由角色设定集的 voice 字段维护，文风文档只负责全局叙事规范");
   }
   state.storyArchitecture?.characterArcMilestones.forEach((item, index) => expect(item.characterId, "character", "story_architecture", `storyArchitecture.characterArcMilestones[${index}].characterId`));
+  const rolling = isRollingOutline(state.novelOutline);
+  const narrativeScheduleOwner: FoundationRewriteTarget = rolling ? "relationship_design" : "narrative_planning";
   state.narrativePlan?.revelationPlan.forEach((item, index) => {
-    item.knownInitiallyBy.forEach((id, child) => expect(id, "character", "narrative_planning", `narrativePlan.revelationPlan[${index}].knownInitiallyBy[${child}]`));
-    item.revealTo.forEach((id, child) => expect(id, "character", "narrative_planning", `narrativePlan.revelationPlan[${index}].revealTo[${child}]`));
-    if (item.earliestChapter > state.targetTotalChapters) issue(issues, "fact_reveal_out_of_range", "narrative_planning", `narrativePlan.revelationPlan[${index}].earliestChapter`, `最早揭示章节 ${item.earliestChapter} 超出全书 ${state.targetTotalChapters} 章范围`);
+    item.knownInitiallyBy.forEach((id, child) => expect(id, "character", narrativeScheduleOwner, `narrativePlan.revelationPlan[${index}].knownInitiallyBy[${child}]`));
+    item.revealTo.forEach((id, child) => expect(id, "character", narrativeScheduleOwner, `narrativePlan.revelationPlan[${index}].revealTo[${child}]`));
+    if (item.earliestChapter > state.targetTotalChapters) issue(issues, "fact_reveal_out_of_range", narrativeScheduleOwner, `narrativePlan.revelationPlan[${index}].earliestChapter`, `最早揭示章节 ${item.earliestChapter} 超出全书 ${state.targetTotalChapters} 章范围`);
   });
   state.narrativePlan?.foreshadowingPlan.forEach((item, index) => {
     const path = `narrativePlan.foreshadowingPlan[${index}]`;
-    if (item.plantChapter > state.targetTotalChapters) issue(issues, "foreshadowing_plant_out_of_range", "narrative_planning", `${path}.plantChapter`, `埋设章节 ${item.plantChapter} 超出全书范围`);
-    if (item.payoffChapter > state.targetTotalChapters) issue(issues, "foreshadowing_payoff_out_of_range", "narrative_planning", `${path}.payoffChapter`, `回收章节 ${item.payoffChapter} 超出全书范围`);
-    if (item.payoffChapter <= item.plantChapter) issue(issues, "foreshadowing_order", "narrative_planning", `${path}.payoffChapter`, "伏笔回收章节必须晚于埋设章节");
+    if (item.plantChapter > state.targetTotalChapters) issue(issues, "foreshadowing_plant_out_of_range", narrativeScheduleOwner, `${path}.plantChapter`, `埋设章节 ${item.plantChapter} 超出全书范围`);
+    if (item.payoffChapter > state.targetTotalChapters) issue(issues, "foreshadowing_payoff_out_of_range", narrativeScheduleOwner, `${path}.payoffChapter`, `回收章节 ${item.payoffChapter} 超出全书范围`);
+    if (item.payoffChapter <= item.plantChapter) issue(issues, "foreshadowing_order", narrativeScheduleOwner, `${path}.payoffChapter`, "伏笔回收章节必须晚于埋设章节");
     item.reinforceChapters.forEach((chapter, child) => {
       if (chapter <= item.plantChapter || chapter >= item.payoffChapter || chapter > state.targetTotalChapters) {
-        issue(issues, "foreshadowing_reinforce_order", "narrative_planning", `${path}.reinforceChapters[${child}]`, "强化章节必须位于埋设与回收章节之间且不超出全书范围");
+        issue(issues, "foreshadowing_reinforce_order", narrativeScheduleOwner, `${path}.reinforceChapters[${child}]`, "强化章节必须位于埋设与回收章节之间且不超出全书范围");
       }
     });
   });
@@ -226,7 +231,7 @@ export function validateFoundationRegistry(state: GraphNovelState): FoundationVa
     state.narrativePlan?.payoffSchedule.forEach((item, index) => {
       const range = parseChapterRange(item.chapterRange);
       if (!range || range.end > state.targetTotalChapters) {
-        issue(issues, "payoff_range", "narrative_planning", `narrativePlan.payoffSchedule[${index}].chapterRange`, `兑现阶段范围 ${item.chapterRange} 无效或超出全书范围`);
+        issue(issues, "payoff_range", "story_architecture", `narrativePlan.payoffSchedule[${index}].chapterRange`, `兑现阶段范围 ${item.chapterRange} 无效或超出全书范围`);
       }
     });
   } else {
@@ -298,6 +303,13 @@ export function validateFoundationRegistry(state: GraphNovelState): FoundationVa
   }
   const baseline = state.continuityBaseline;
   if (baseline) {
+    const plannedFacts = new Map((state.narrativePlan?.revelationPlan ?? []).map((item) => [item.factId, item.information]));
+    baseline.initialFacts.forEach((item, index) => {
+      const planned = plannedFacts.get(item.factId);
+      if (planned !== undefined && planned.trim() !== item.statement.trim()) {
+        issue(issues, "fact_definition_mismatch", "continuity_baseline", `continuityBaseline.initialFacts[${index}].statement`, `${item.factId} 与节奏揭示表中的事实内容不一致`);
+      }
+    });
     Object.entries(baseline.characterLocations).forEach(([characterId, locationId]) => {
       expect(characterId, "character", "continuity_baseline", `continuityBaseline.characterLocations.${characterId}`);
       expect(locationId, "location", "continuity_baseline", `continuityBaseline.characterLocations.${characterId}`);

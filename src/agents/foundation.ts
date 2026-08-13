@@ -27,7 +27,7 @@ import type {
   NovelOutline,
   WorldSetting,
 } from "../state/foundation.js";
-import { buildRollingNovelOutline } from "../state/rolling-outline.js";
+import { buildRollingNarrativePlan, buildRollingNovelOutline } from "../state/rolling-outline.js";
 import type { LegacyFoundationSource } from "../state/foundation-upgrade.js";
 import {
   createFoundationSnapshot,
@@ -190,17 +190,15 @@ export function createFoundationEngine(
       characters: state.characters, relationshipMap: state.relationshipMap,
       targetTotalChapters: state.targetTotalChapters,
     }), (state, value) => { state.storyArchitecture = value; }, dependencies, options.upgradeSource),
-    contractedNode(NARRATIVE_NODE, "节奏、伏笔与信息流设计师", NARRATIVE_PLAN_CONTRACT, (text, state) => parseNarrativePlan(text, state.targetTotalChapters), (state) => ({
-      creativeCharter: state.creativeCharter, characters: state.characters,
-      relationshipMap: state.relationshipMap, storyArchitecture: state.storyArchitecture,
-      targetTotalChapters: state.targetTotalChapters,
-    }), (state, value) => { state.narrativePlan = value; }, dependencies, options.upgradeSource),
+    narrativeNode(dependencies, options.upgradeSource),
     outlineNode(dependencies, options.upgradeSource),
     contractedNode(STYLE_NODE, "文风与叙事规范设计师", STYLE_GUIDE_CONTRACT, parseStyleGuide, (state) => ({
       creativeCharter: state.creativeCharter, characters: state.characters,
       storyArchitecture: state.storyArchitecture, outlineDigest: compactOutline(state.novelOutline),
     }), (state, value) => { state.styleGuide = value; }, dependencies, options.upgradeSource),
-    contractedNode(BASELINE_NODE, "开篇连续性建档员", BASELINE_CONTRACT, parseContinuityBaseline, (state) => ({
+    contractedNode(BASELINE_NODE, "开篇连续性建档员", BASELINE_CONTRACT, (text, state) => (
+      alignBaselineKnowledge(parseContinuityBaseline(text), state)
+    ), (state) => ({
       worldSetting: state.worldSetting, characters: state.characters,
       relationshipMap: state.relationshipMap, storyArchitecture: state.storyArchitecture,
       narrativePlan: state.narrativePlan, outlineDigest: compactOutline(state.novelOutline),
@@ -225,15 +223,15 @@ export function createFoundationEngine(
           context,
           dependencies,
           REVIEW_NODE,
-          `你是 Foundation 一致性审查员，不负责补写设定。只输出一个 JSON 对象。检查题材承诺、世界规则、角色动机、角色秘密与关系揭示计划、故事阶段、信息揭示、文风和开篇基线是否互相一致。planningMode 为 rolling 时，Foundation 只审批固定规模的全书路线图，逐章细节将在章节规划前结合最新 State 生成；不得因为不存在预生成的逐章细纲而报错，也不得要求补写全书逐章细纲。路线图由 story_architecture 和 narrative_planning 确定性派生，若其语义有问题，issue.target 必须指向这两个上游所有者之一，禁止把 outline_planning 作为 rolling 路线图的重写目标。秘密正文归 character_design，秘密持有者和计划揭示章节归 relationship_design，事实揭示时序及 knownInitiallyBy 归 narrative_planning，开篇认知记录归 continuity_baseline；knownInitiallyBy 只能包含故事开篇前已经知道完整事实的角色，如果错误的初始认知源自 knownInitiallyBy，issue.target 必须是 narrative_planning。issue.target 必须指向真正拥有待修改字段的节点。${options.upgradeSource ? "这是旧项目升级；还必须逐项对照 legacyUpgradeReference，任何与已批准章节、既有设定、事实账本或角色认知冲突的内容都不得通过。" : ""}严格使用契约：${JSON.stringify(REVIEW_CONTRACT)}。target 只能取：${FOUNDATION_REWRITE_ORDER.join(",")}。通过时 issues 与 rewriteTargets 必须为空；未通过时指出最早产生问题的节点。`,
+          `你是 Foundation 一致性审查员，不负责补写设定。只输出一个 JSON 对象。检查题材承诺、世界规则、角色动机、角色秘密与关系揭示计划、故事阶段、信息揭示、文风和开篇基线是否互相一致。planningMode 为 rolling 时，Foundation 只审批固定规模的全书路线图，逐章细节将在章节规划前结合最新 State 生成；不得因为不存在预生成的逐章细纲而报错，也不得要求补写全书逐章细纲。rolling 模式的 narrative_planning 与 outline_planning 都是从角色秘密、关系揭示计划和 story_architecture 确定性编译的派生文档；若其语义有问题，issue.target 必须指向 character_design、relationship_design 或 story_architecture，禁止把这两个派生节点作为重写目标。秘密正文归 character_design，秘密持有者和计划揭示章节归 relationship_design；短篇完整大纲模式的事实揭示时序及 knownInitiallyBy 归 narrative_planning，rolling 模式则派生自 relationship_design；开篇认知记录归 continuity_baseline。knownInitiallyBy 只能包含故事开篇前已经知道完整事实的角色。issue.target 必须指向真正拥有待修改字段的节点。${options.upgradeSource ? "这是旧项目升级；还必须逐项对照 legacyUpgradeReference，任何与已批准章节、既有设定、事实账本或角色认知冲突的内容都不得通过。" : ""}严格使用契约：${JSON.stringify(REVIEW_CONTRACT)}。target 只能取：${FOUNDATION_REWRITE_ORDER.join(",")}。通过时 issues 与 rewriteTargets 必须为空；未通过时指出最早产生问题的节点。`,
           JSON.stringify(foundationReviewInput(context.state, options.upgradeSource)),
           (text) => {
             const review = parseFoundationReview(text);
             if (context.state.novelOutline?.planningMode === "rolling"
-              && review.rewriteTargets.includes(OUTLINE_NODE)) {
+              && review.rewriteTargets.some((target) => target === NARRATIVE_NODE || target === OUTLINE_NODE)) {
               throw new OutputContractError(
                 "foundation_review.rewriteTargets",
-                "rolling 路线图是确定性派生文档；请把问题指向 story_architecture 或 narrative_planning",
+                "rolling 节奏表与路线图是确定性派生文档；请把问题指向 character_design、relationship_design 或 story_architecture",
               );
             }
             return review;
@@ -293,7 +291,13 @@ export async function runFoundationGeneration(
     state.creativeCharter && state.worldSetting && state.characters.length
       && state.relationshipMap && state.storyArchitecture && state.narrativePlan,
   );
-  const resumeOutline = upstreamReady && (
+  const resumeNarrative = Boolean(
+    state.creativeCharter && state.worldSetting && state.characters.length
+      && state.relationshipMap && state.storyArchitecture
+      && state.nodes[NARRATIVE_NODE]?.status === "failed"
+      && state.lastError?.nodeKey === NARRATIVE_NODE,
+  );
+  const resumeOutline = !resumeNarrative && upstreamReady && (
     ((state.foundationOutlineProgress?.status === "failed" || state.foundationOutlineProgress?.status === "running")
       && state.foundationOutlineProgress.nextChapter <= state.targetTotalChapters)
       || (!state.foundationOutlineProgress && !state.novelOutline && state.nodes[OUTLINE_NODE]?.status === "failed")
@@ -303,7 +307,7 @@ export async function runFoundationGeneration(
   state.foundationValidation = null;
   state.foundationSnapshot = null;
   state.foundationOutlineProgress = resumeOutline ? state.foundationOutlineProgress : null;
-  const startNode = resumeOutline ? OUTLINE_NODE : CHARTER_NODE;
+  const startNode = resumeNarrative ? NARRATIVE_NODE : resumeOutline ? OUTLINE_NODE : CHARTER_NODE;
   return createFoundationEngine(dependencies, checkpoints).run(state, startNode, sink);
 }
 
@@ -466,6 +470,46 @@ function contractedNode<T>(
       );
       apply(context.state, value);
       recordFoundationDocument(context.state, key, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function narrativeNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  const generated = contractedNode(
+    NARRATIVE_NODE,
+    "节奏、伏笔与信息流设计师",
+    NARRATIVE_PLAN_CONTRACT,
+    (text, state) => parseNarrativePlan(text, state.targetTotalChapters),
+    (state) => ({
+      creativeCharter: state.creativeCharter,
+      characters: state.characters,
+      relationshipMap: state.relationshipMap,
+      storyArchitecture: state.storyArchitecture,
+      targetTotalChapters: state.targetTotalChapters,
+    }),
+    (state, value) => { state.narrativePlan = value; },
+    dependencies,
+    upgradeSource,
+  );
+  return {
+    key: NARRATIVE_NODE,
+    async run(context) {
+      if (context.state.targetTotalChapters <= OUTLINE_BATCH_THRESHOLD) {
+        return generated.run(context);
+      }
+      const nodeInput = {
+        planningMode: "rolling",
+        targetTotalChapters: context.state.targetTotalChapters,
+        storyArchitecture: context.state.storyArchitecture,
+        relationshipMap: context.state.relationshipMap,
+      };
+      const value = normalizeNarrativePlanIds(buildRollingNarrativePlan(context.state), context.state);
+      context.state.narrativePlan = value;
+      recordFoundationDocument(context.state, NARRATIVE_NODE, nodeInput, value);
       return { status: "completed" };
     },
   };
@@ -908,21 +952,31 @@ function normalizeNarrativePlanIds(plan: NarrativePlan, state: GraphNovelState):
   for (const arc of state.storyArchitecture?.storyArcs ?? []) {
     if (arc.arcId) reservedIds.add(arc.arcId);
   }
-  for (const foreshadowing of plan.foreshadowingPlan) reservedIds.add(foreshadowing.id);
+
+  const allocateId = (requested: string, fallbackPrefix: string, allocated: Set<string>): string => {
+    if (!reservedIds.has(requested) && !allocated.has(requested)) return requested;
+    const base = requested.startsWith(`${fallbackPrefix}_`) ? requested : `${fallbackPrefix}_${requested}`;
+    let candidate = base;
+    let suffix = 2;
+    while (reservedIds.has(candidate) || allocated.has(candidate)) candidate = `${base}_${suffix++}`;
+    return candidate;
+  };
+
+  const foreshadowingIds = new Set<string>();
+  const foreshadowingPlan = plan.foreshadowingPlan.map((item) => {
+    const id = allocateId(item.id, "foreshadow", foreshadowingIds);
+    foreshadowingIds.add(id);
+    return { ...item, id };
+  });
+  foreshadowingIds.forEach((id) => reservedIds.add(id));
 
   const factIds = new Set<string>();
   const revelationPlan = plan.revelationPlan.map((item) => {
-    let factId = item.factId;
-    if (reservedIds.has(factId) || factIds.has(factId)) {
-      const base = factId.startsWith("fact_") ? factId : `fact_${factId}`;
-      factId = base;
-      let suffix = 2;
-      while (reservedIds.has(factId) || factIds.has(factId)) factId = `${base}_${suffix++}`;
-    }
+    const factId = allocateId(item.factId, "fact", factIds);
     factIds.add(factId);
     return { ...item, factId };
   });
-  return { ...plan, revelationPlan };
+  return { ...plan, foreshadowingPlan, revelationPlan };
 }
 
 function alignUpgradeOutlineReferences(outline: NovelOutline, state: GraphNovelState): NovelOutline {
@@ -960,7 +1014,44 @@ function alignUpgradeBaselineKnowledge(
   const characterLocations = Object.fromEntries(
     Object.entries(baseline.characterLocations).filter(([, locationId]) => locationIds.has(locationId)),
   );
-  const initialKnowledge = cloneValue(baseline.initialKnowledge);
+  return alignBaselineKnowledge({ ...baseline, characterLocations }, state);
+}
+
+function alignBaselineKnowledge(
+  baseline: ContinuityBaseline,
+  state: GraphNovelState,
+): ContinuityBaseline {
+  const characterIds = new Set(state.characters.flatMap((character) => character.characterId ? [character.characterId] : []));
+  const locationIds = new Set((state.worldSetting?.keyLocations ?? []).map((location) => location.locationId));
+  const plannedFactPlans = new Map((state.narrativePlan?.revelationPlan ?? []).map((plan) => [plan.factId, plan]));
+  const plannedFacts = new Map([...plannedFactPlans].map(([factId, plan]) => [factId, plan.information]));
+  const initialFacts = baseline.initialFacts.map((fact) => {
+    const planned = plannedFacts.get(fact.factId);
+    return {
+      ...fact,
+      statement: planned !== undefined && planned.trim() === fact.statement.trim() ? planned : fact.statement,
+    };
+  });
+  const factIds = new Set([
+    ...plannedFacts.keys(),
+    ...initialFacts.map((fact) => fact.factId),
+    ...state.narrativeFacts.map((fact) => fact.factId),
+  ]);
+  const characterLocations = Object.fromEntries(Object.entries(baseline.characterLocations).filter(
+    ([characterId, locationId]) => characterIds.has(characterId) && locationIds.has(locationId),
+  ));
+  const characterConditions = Object.fromEntries(Object.entries(baseline.characterConditions).filter(
+    ([characterId]) => characterIds.has(characterId),
+  ));
+  const resources = Object.fromEntries(Object.entries(baseline.resources).filter(
+    ([characterId]) => characterIds.has(characterId),
+  ));
+  const initialKnowledge = cloneValue(baseline.initialKnowledge).filter((item) => (
+    factIds.has(item.factId)
+      && Boolean(item.characterId && characterIds.has(item.characterId))
+      && (item.sourceType !== "told" || Boolean(item.sourceCharacterId && characterIds.has(item.sourceCharacterId)))
+      && (!plannedFactPlans.has(item.factId) || plannedFactPlans.get(item.factId)!.knownInitiallyBy.includes(item.characterId!))
+  ));
   const existing = new Set(initialKnowledge.map((item) => `${item.factId}\u0000${item.characterId ?? ""}`));
   for (const plan of state.narrativePlan?.revelationPlan ?? []) {
     for (const characterId of plan.knownInitiallyBy) {
@@ -977,7 +1068,14 @@ function alignUpgradeBaselineKnowledge(
       existing.add(key);
     }
   }
-  return { ...baseline, characterLocations, initialKnowledge };
+  return {
+    ...baseline,
+    characterLocations,
+    characterConditions,
+    resources,
+    initialFacts,
+    initialKnowledge,
+  };
 }
 
 function assertLegacyWorld(value: WorldSetting, legacy: WorldSetting): void {

@@ -1,9 +1,9 @@
 import { Download, FileText } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../ui/card";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
 import { Progress } from "../ui/progress";
+import { StatusBadge } from "../status/status-badge";
 import type { ProjectState, ServiceStatus } from "../../types/graph";
 
 export function ProjectSidebar({ state, status }: { state: ProjectState; status: ServiceStatus; route?: string }) {
@@ -14,7 +14,7 @@ export function ProjectSidebar({ state, status }: { state: ProjectState; status:
         <CardDescription>当前项目</CardDescription>
         <CardTitle className="break-words text-base leading-6">{state.novelTitle}</CardTitle>
         <code className="truncate text-xs text-muted-foreground">{state.projectId}</code>
-        <div className="flex flex-wrap items-center gap-2 pt-1"><Badge variant="outline">{state.workflowPhase}</Badge><Badge variant={status === "failed" ? "destructive" : status === "running" ? "secondary" : "outline"}>{status}</Badge></div>
+        <div className="flex flex-wrap items-center gap-2 pt-1"><StatusBadge status={status} /></div>
       </CardHeader>
       <CardContent className="p-4 pt-0">
         <Separator className="mb-4" />

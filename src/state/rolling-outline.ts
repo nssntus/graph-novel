@@ -1,5 +1,6 @@
 import type {
   ChapterOutline,
+  NarrativePlan,
   NovelOutline,
   PayoffScheduleItem,
   StoryArc,
@@ -38,6 +39,60 @@ export function buildRollingNovelOutline(state: GraphNovelState): NovelOutline {
     planningMode: "rolling",
     roadmapSegments,
     chapterOutlines: [],
+  };
+}
+
+export function buildRollingNarrativePlan(state: GraphNovelState): NarrativePlan {
+  const arcs = state.storyArchitecture?.storyArcs ?? [];
+  const secrets = state.relationshipMap?.secrets ?? [];
+  const characters = state.characters.map((character) => character.characterId).filter((id): id is string => Boolean(id));
+  const secretContents = new Map(
+    state.characters.flatMap((character) => character.secrets ?? [])
+      .map((secret) => [secret.secretId, secret.content]),
+  );
+  return {
+    pacingPrinciples: [
+      "每章必须产生可验证的状态变化，并承接已批准章节留下的行动与信息",
+      "阶段转折只在所属故事阶段后段兑现，前段负责目标、阻力与证据铺垫",
+      "秘密、事实和伏笔严格按照确定性排期执行，不得提前揭示或重复首次揭示",
+      ...arcs.map((arc) => `${arc.chapterRange}「${arc.name}」：围绕“${arc.objective}”逐步升级“${arc.opposition}”带来的压力`),
+    ],
+    payoffSchedule: arcs.map((arc) => ({
+      chapterRange: arc.chapterRange,
+      type: "故事阶段兑现",
+      setup: `${arc.objective}；主要阻力：${arc.opposition}`,
+      payoff: arc.outcome,
+    })),
+    foreshadowingPlan: secrets.flatMap((secret) => {
+      const payoffChapter = secret.plannedRevealChapter;
+      if (!payoffChapter || payoffChapter <= 1) return [];
+      const plantChapter = Math.max(1, payoffChapter - Math.max(2, Math.ceil(state.targetTotalChapters * 0.03)));
+      const midpoint = plantChapter + Math.floor((payoffChapter - plantChapter) / 2);
+      const information = secretContents.get(secret.secretId) ?? secret.plannedReveal;
+      return [{
+        id: `foreshadow_${secret.secretId}`,
+        description: `围绕“${information}”留下可追溯但不提前揭底的线索`,
+        plantChapter,
+        reinforceChapters: midpoint > plantChapter && midpoint < payoffChapter ? [midpoint] : [],
+        payoffChapter,
+        payoff: secret.plannedReveal,
+      }];
+    }),
+    revelationPlan: secrets.map((secret) => {
+      const holders = unique(secret.holders);
+      const outsideRecipients = unique(secret.affectedCharacters.filter((id) => !holders.includes(id)));
+      const revealTo = outsideRecipients.length > 0
+        ? outsideRecipients
+        : unique([...secret.affectedCharacters, ...characters]).slice(0, 1);
+      return {
+        factId: `fact_${secret.secretId}`,
+        information: secretContents.get(secret.secretId) ?? secret.plannedReveal,
+        knownInitiallyBy: holders,
+        revealTo: revealTo.length > 0 ? revealTo : holders,
+        earliestChapter: secret.plannedRevealChapter ?? state.targetTotalChapters,
+        method: secret.plannedReveal,
+      };
+    }),
   };
 }
 
