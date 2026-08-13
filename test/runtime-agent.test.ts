@@ -25,6 +25,10 @@ function createMockModel(): Model<"openai-responses"> {
   };
 }
 
+function createReasoningMockModel(): Model<"openai-responses"> {
+  return { ...createMockModel(), reasoning: true };
+}
+
 function createAssistantMessage(
   text: string,
   stopReason: AssistantMessage["stopReason"] = "stop",
@@ -92,6 +96,65 @@ test("runs a Pi Agent turn and maps lifecycle events", async () => {
   assert.equal(events[0]?.type, "node_started");
   assert.equal(events.at(-1)?.type, "node_completed");
   assert.ok(events.some((event) => event.type === "agent_event" && event.event.type === "agent_end"));
+});
+
+test("runtime forwards an explicit output budget to the provider stream", async () => {
+  let observedMaxTokens: number | undefined;
+  const runtime = new PiAgentRuntime();
+  await runtime.run({
+    nodeKey: "bounded_node",
+    attempt: 1,
+    systemPrompt: "You are a test agent.",
+    prompt: "Return the fixed result.",
+    model: createMockModel(),
+    streamFn: (_model, _context, options) => {
+      observedMaxTokens = options?.maxTokens;
+      return createMockStream("fixed result");
+    },
+    maxOutputTokens: 512,
+  });
+  assert.equal(observedMaxTokens, 512);
+});
+
+test("a request can disable thinking for bounded structured output", async () => {
+  let observedReasoning: unknown = "not-called";
+  const runtime = new PiAgentRuntime({ thinkingLevel: "max" });
+  await runtime.run({
+    nodeKey: "structured_node",
+    attempt: 1,
+    systemPrompt: "Return JSON.",
+    prompt: "Return the fixed result.",
+    model: createReasoningMockModel(),
+    streamFn: (_model, _context, options) => {
+      observedReasoning = options?.reasoning;
+      return createMockStream("{}");
+    },
+    thinkingLevel: "off",
+  });
+  assert.equal(observedReasoning, undefined);
+});
+
+test("JSON mode adds the provider response format without changing other payload fields", async () => {
+  let transformed: unknown;
+  const runtime = new PiAgentRuntime();
+  await runtime.run({
+    nodeKey: "json_node",
+    attempt: 1,
+    systemPrompt: "Return JSON.",
+    prompt: "Return the fixed result.",
+    model: createMockModel(),
+    streamFn: (_model, _context, options) => {
+      transformed = options?.onPayload?.({ model: "mock", messages: [], stream: true }, createMockModel());
+      return createMockStream("{}");
+    },
+    jsonMode: true,
+  });
+  assert.deepEqual(transformed, {
+    model: "mock",
+    messages: [],
+    stream: true,
+    response_format: { type: "json_object" },
+  });
 });
 
 test("turn failures become observable node failures", async () => {

@@ -4,6 +4,7 @@ import type {
   ContinuityBaseline,
   CreativeCharter,
   FoundationReview,
+  FoundationOutlineProgress,
   NarrativePlan,
   NovelOutline,
   RelationshipMap,
@@ -77,6 +78,7 @@ export interface GraphNovelState {
   storyArchitecture: StoryArchitecture | null;
   narrativePlan: NarrativePlan | null;
   novelOutline: NovelOutline | null;
+  foundationOutlineProgress: FoundationOutlineProgress | null;
   styleGuide: StyleGuide | null;
   continuityBaseline: ContinuityBaseline | null;
   foundationReview: FoundationReview | null;
@@ -185,6 +187,7 @@ export function createInitialState(
     storyArchitecture: null,
     narrativePlan: null,
     novelOutline: null,
+    foundationOutlineProgress: null,
     styleGuide: null,
     continuityBaseline: null,
     foundationReview: null,
@@ -273,6 +276,7 @@ function hasStateShape(value: unknown): value is Omit<GraphNovelState, "schemaVe
     (candidate.storyArchitecture === null || typeof candidate.storyArchitecture === "object") &&
     (candidate.narrativePlan === null || typeof candidate.narrativePlan === "object") &&
     (candidate.novelOutline === null || typeof candidate.novelOutline === "object") &&
+    (candidate.foundationOutlineProgress === null || typeof candidate.foundationOutlineProgress === "object") &&
     (candidate.styleGuide === null || typeof candidate.styleGuide === "object") &&
     (candidate.continuityBaseline === null || typeof candidate.continuityBaseline === "object") &&
     (candidate.foundationReview === null || typeof candidate.foundationReview === "object") &&
@@ -323,6 +327,7 @@ function withContinuityDefaults(value: unknown): unknown {
     relationshipMap: candidate.relationshipMap && typeof candidate.relationshipMap === "object" ? candidate.relationshipMap : null,
     storyArchitecture: candidate.storyArchitecture && typeof candidate.storyArchitecture === "object" ? candidate.storyArchitecture : null,
     narrativePlan: candidate.narrativePlan && typeof candidate.narrativePlan === "object" ? candidate.narrativePlan : null,
+    foundationOutlineProgress: candidate.foundationOutlineProgress && typeof candidate.foundationOutlineProgress === "object" ? candidate.foundationOutlineProgress : null,
     styleGuide: candidate.styleGuide && typeof candidate.styleGuide === "object" ? candidate.styleGuide : null,
     continuityBaseline: candidate.continuityBaseline && typeof candidate.continuityBaseline === "object" ? candidate.continuityBaseline : null,
     foundationReview: candidate.foundationReview && typeof candidate.foundationReview === "object" ? candidate.foundationReview : null,

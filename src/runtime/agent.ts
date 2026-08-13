@@ -39,14 +39,21 @@ export class PiAgentRuntime {
     sink?: GraphEventSink,
   ): Promise<AgentNodeResult> {
     const sessionId = request.sessionId ?? randomUUID();
+    const streamFn = request.maxOutputTokens
+      ? ((model, context, options) => request.streamFn(model, context, {
+          ...options,
+          maxTokens: Math.min(request.maxOutputTokens!, model.maxTokens),
+        })) satisfies typeof request.streamFn
+      : request.streamFn;
     const agent = new Agent({
       initialState: {
         systemPrompt: request.systemPrompt,
         model: request.model,
-        thinkingLevel: this.options.thinkingLevel ?? "off",
+        thinkingLevel: request.thinkingLevel ?? this.options.thinkingLevel ?? "off",
       },
       sessionId,
-      streamFn: request.streamFn,
+      streamFn,
+      onPayload: request.jsonMode ? enableJsonMode : undefined,
       thinkingBudgets: this.options.thinkingBudgets,
     });
 
@@ -135,4 +142,10 @@ export class PiAgentRuntime {
       .map((part) => part.text)
       .join("");
   }
+}
+
+function enableJsonMode(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  if (!("messages" in payload)) return payload;
+  return { ...payload, response_format: { type: "json_object" } };
 }

@@ -11,6 +11,7 @@ import {
   parseNovelOutline,
   parseRelationshipMap,
   parseStoryArchitecture,
+  parseStoryArchitectureIntent,
   parseStyleGuide,
   parseWorldSetting,
 } from "../contracts/foundation.js";
@@ -25,8 +26,12 @@ import type {
   FoundationRewriteTarget,
   NarrativePlan,
   NovelOutline,
+  RelationshipMap,
+  StoryArchitecture,
   WorldSetting,
 } from "../state/foundation.js";
+import type { StoryArchitectureIntent } from "../contracts/foundation.js";
+import { buildRollingNarrativePlan, buildRollingNovelOutline } from "../state/rolling-outline.js";
 import type { LegacyFoundationSource } from "../state/foundation-upgrade.js";
 import {
   createFoundationSnapshot,
@@ -97,29 +102,63 @@ const RELATIONSHIP_CONTRACT = {
 
 const ARCHITECTURE_CONTRACT = {
   centralConflict: "非空字符串", stakes: "非空字符串", endingDirection: "非空字符串",
-  storyArcs: [{ arcId: "稳定 ASCII ID", name: "非空字符串", chapterRange: "非空字符串", objective: "非空字符串", opposition: "非空字符串", turningPoint: "非空字符串", outcome: "非空字符串" }],
+  storyArcs: [{ arcId: "稳定 ASCII ID；全书共 1-12 个阶段", name: "非空字符串", chapterRange: "明确的连续章节范围，例如 1-40；所有阶段必须无缝覆盖全书", objective: "非空字符串", opposition: "非空字符串", turningPoint: "非空字符串", outcome: "非空字符串" }],
   characterArcMilestones: [{ characterId: "角色 ID", startingState: "非空字符串", milestones: ["非空字符串；至少一项"], endingState: "非空字符串" }],
+};
+
+const ARCHITECTURE_INTENT_CONTRACT = {
+  centralConflict: "最多 400 字",
+  stakes: "最多 400 字",
+  endingDirection: "最多 400 字",
+  storyArcs: [{
+    arcId: "可选的稳定 ASCII ID；缺省时由 Graph 引擎分配",
+    name: "最多 80 字；全书共 1-8 个阶段",
+    objective: "最多 300 字",
+    opposition: "最多 300 字",
+    turningPoint: "最多 300 字",
+    outcome: "最多 300 字",
+    weight: "1-5 的整数，表示相对篇幅；不输出章节号或 ID",
+  }],
 };
 
 const NARRATIVE_PLAN_CONTRACT = {
   pacingPrinciples: ["非空字符串；至少一项"],
-  payoffSchedule: [{ chapterRange: "非空字符串", type: "爽点、反转、情绪兑现等", setup: "前置铺垫", payoff: "兑现内容" }],
+  payoffSchedule: [{ chapterRange: "明确章节范围，例如 1-40；最多 24 项", type: "爽点、反转、情绪兑现等", setup: "前置铺垫", payoff: "兑现内容" }],
   foreshadowingPlan: [{ id: "稳定标识", description: "伏笔内容", plantChapter: "正整数", reinforceChapters: ["正整数，可为空"], payoffChapter: "正整数", payoff: "回收方式" }],
   revelationPlan: [{ factId: "稳定 ASCII ID", information: "信息内容", knownInitiallyBy: ["仅限故事开篇前已经知道完整事实的角色 ID；角色在某章才获知时禁止列入，可为空"], revealTo: ["后续获知角色 ID，至少一项"], earliestChapter: "正整数", method: "可追溯的获知方式" }],
 };
 
+const OUTLINE_CHAPTER_CONTRACT = {
+  chapterNumber: "正整数，必须与请求范围内的章节号完全连续",
+  title: "非空字符串",
+  summary: "非空字符串，说明本章可验证的剧情推进",
+  povCharacter: "角色名，仅用于阅读",
+  povCharacterId: "角色 ID",
+  involvedCharacterIds: ["在场或参与角色 ID，至少一项"],
+  locationIds: ["地点 ID，至少一项"],
+  factionIds: ["本章实际涉及的势力 ID，可为空"],
+  requiredSystemIds: ["本章实际使用或约束情节的能力体系 ID，可为空"],
+  requiredRuleIds: ["本章必须遵守的世界规则 ID，至少一项"],
+  storyArcIds: ["本章所属故事阶段 ID，至少一项"],
+  chapterGoal: "本章目标",
+  conflict: "本章主要冲突",
+  causalPrerequisites: ["必须在本章前已成立的条件，可为空；引用事实 ID 时只能使用输入中已登记且在本章前成立的 ID，未来条件必须写成具体自然语言，禁止虚构或使用占位 ID"],
+  keyEvents: ["非空字符串；至少一项；每项都是本章实际发生的关键事件，禁止省略、空数组或用占位符代替"],
+  turningPoint: "转折",
+  payoff: "本章兑现",
+  chapterHook: "章末钩子",
+  revealedSecretIds: ["本章揭示的秘密 ID，可为空"],
+  revealedFactIds: ["本章揭示的事实 ID，可为空"],
+  foreshadowingToPlant: ["伏笔 ID，可为空"],
+  foreshadowingToPayOff: ["伏笔 ID，可为空"],
+};
+
 const OUTLINE_CONTRACT = {
   genre: "非空字符串", premise: "非空字符串", theme: "非空字符串", targetLength: "非空字符串",
-  chapterOutlines: [{
-    chapterNumber: "正整数", title: "非空字符串", summary: "非空字符串",
-    povCharacter: "角色名，仅用于阅读", povCharacterId: "角色 ID", involvedCharacterIds: ["在场或参与角色 ID，至少一项"], locationIds: ["地点 ID，至少一项"], factionIds: ["本章实际涉及的势力 ID，可为空"], requiredSystemIds: ["本章实际使用或约束情节的能力体系 ID，可为空"], requiredRuleIds: ["本章必须遵守的世界规则 ID，至少一项"], storyArcIds: ["本章所属故事阶段 ID，至少一项"],
-    chapterGoal: "本章目标", conflict: "本章主要冲突",
-    causalPrerequisites: ["必须在本章前已成立的条件，可为空；引用事实 ID 时只能使用输入中已登记且在本章前成立的 ID，未来条件必须写成具体自然语言，禁止虚构或使用占位 ID"],
-    keyEvents: ["非空字符串；至少一项"], turningPoint: "转折", payoff: "本章兑现",
-    chapterHook: "章末钩子", revealedSecretIds: ["本章揭示的秘密 ID，可为空"], revealedFactIds: ["本章揭示的事实 ID，可为空"],
-    foreshadowingToPlant: ["伏笔 ID，可为空"], foreshadowingToPayOff: ["伏笔 ID，可为空"],
-  }],
+  chapterOutlines: [OUTLINE_CHAPTER_CONTRACT],
 };
+
+const OUTLINE_BATCH_THRESHOLD = 24;
 
 const STYLE_GUIDE_CONTRACT = {
   pointOfView: "非空字符串", tense: "非空字符串", tone: "非空字符串",
@@ -160,36 +199,17 @@ export function createFoundationEngine(
       creativeCharter: state.creativeCharter, notes: state.creativeNotes,
     }), (state, value) => { state.worldSetting = value; }, dependencies, options.upgradeSource),
     contractedNode(CHARACTER_NODE, "角色设计师", [CHARACTER_CONTRACT], parseCharacters, (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: state.worldSetting,
+      creativeCharter: state.creativeCharter, worldSetting: compactWorld(state),
     }), (state, value) => { state.characters = value; }, dependencies, options.upgradeSource, "JSON 数组"),
-    contractedNode(RELATIONSHIP_NODE, "人物关系与秘密揭示调度师", RELATIONSHIP_CONTRACT, parseRelationshipMap, (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: state.worldSetting, characters: state.characters,
-    }), (state, value) => { state.relationshipMap = value; }, dependencies, options.upgradeSource),
-    contractedNode(ARCHITECTURE_NODE, "长篇故事架构师", ARCHITECTURE_CONTRACT, parseStoryArchitecture, (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: state.worldSetting,
-      characters: state.characters, relationshipMap: state.relationshipMap,
-      targetTotalChapters: state.targetTotalChapters,
-    }), (state, value) => { state.storyArchitecture = value; }, dependencies, options.upgradeSource),
-    contractedNode(NARRATIVE_NODE, "节奏、伏笔与信息流设计师", NARRATIVE_PLAN_CONTRACT, parseNarrativePlan, (state) => ({
-      creativeCharter: state.creativeCharter, characters: state.characters,
-      relationshipMap: state.relationshipMap, storyArchitecture: state.storyArchitecture,
-      targetTotalChapters: state.targetTotalChapters,
-    }), (state, value) => { state.narrativePlan = value; }, dependencies, options.upgradeSource),
-    contractedNode(OUTLINE_NODE, "全书章节大纲规划师", OUTLINE_CONTRACT, parseFoundationOutline, (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: state.worldSetting,
-      characters: state.characters, relationshipMap: state.relationshipMap,
-      storyArchitecture: state.storyArchitecture, narrativePlan: state.narrativePlan,
-      targetTotalChapters: state.targetTotalChapters, targetTotalWords: state.targetTotalWords,
-    }), (state, value) => { state.novelOutline = value; }, dependencies, options.upgradeSource),
+    relationshipNode(dependencies, options.upgradeSource),
+    architectureNode(dependencies, options.upgradeSource),
+    narrativeNode(dependencies, options.upgradeSource),
+    outlineNode(dependencies, options.upgradeSource),
     contractedNode(STYLE_NODE, "文风与叙事规范设计师", STYLE_GUIDE_CONTRACT, parseStyleGuide, (state) => ({
-      creativeCharter: state.creativeCharter, characters: state.characters,
-      storyArchitecture: state.storyArchitecture, novelOutline: state.novelOutline,
+      creativeCharter: state.creativeCharter, characters: compactCharacterVoices(state),
+      storyArchitecture: state.storyArchitecture, outlineDigest: compactOutline(state.novelOutline),
     }), (state, value) => { state.styleGuide = value; }, dependencies, options.upgradeSource),
-    contractedNode(BASELINE_NODE, "开篇连续性建档员", BASELINE_CONTRACT, parseContinuityBaseline, (state) => ({
-      worldSetting: state.worldSetting, characters: state.characters,
-      relationshipMap: state.relationshipMap, storyArchitecture: state.storyArchitecture,
-      narrativePlan: state.narrativePlan, novelOutline: state.novelOutline,
-    }), (state, value) => { state.continuityBaseline = value; }, dependencies, options.upgradeSource),
+    baselineNode(dependencies, options.upgradeSource),
     {
       key: VALIDATION_NODE,
       async run(context) {
@@ -206,13 +226,37 @@ export function createFoundationEngine(
     {
       key: REVIEW_NODE,
       async run(context) {
+        if (context.state.novelOutline?.planningMode === "rolling") {
+          if (context.state.foundationValidation?.passed !== true) {
+            return { status: "failed", error: "长篇 Foundation 必须先通过确定性 Registry 校验" };
+          }
+          context.state.foundationReview = {
+            passed: true,
+            score: 100,
+            summary: "结构、时序与 Registry 引用的确定性校验已通过；长篇语义质量不再依赖单次模型审查，将提交人工 Gate 最终审批。",
+            issues: [],
+            rewriteTargets: [],
+          };
+          return { status: "completed" };
+        }
         const review = await runContractedNode(
           context,
           dependencies,
           REVIEW_NODE,
-          `你是 Foundation 一致性审查员，不负责补写设定。只输出一个 JSON 对象。检查题材承诺、世界规则、角色动机、角色秘密与关系揭示计划、故事阶段、信息揭示、逐章因果、文风和开篇基线是否互相一致，并确认大纲覆盖目标章数。秘密正文归 character_design，秘密持有者和计划揭示章节归 relationship_design，事实揭示时序及 knownInitiallyBy 归 narrative_planning，开篇认知记录归 continuity_baseline；knownInitiallyBy 只能包含故事开篇前已经知道完整事实的角色，如果错误的初始认知源自 knownInitiallyBy，issue.target 必须是 narrative_planning。issue.target 必须指向真正拥有待修改字段的节点。${options.upgradeSource ? "这是旧项目升级；还必须逐项对照 legacyUpgradeReference，任何与已批准章节、既有设定、事实账本或角色认知冲突的内容都不得通过。" : ""}严格使用契约：${JSON.stringify(REVIEW_CONTRACT)}。target 只能取：${FOUNDATION_REWRITE_ORDER.join(",")}。通过时 issues 与 rewriteTargets 必须为空；未通过时指出最早产生问题的节点。`,
+          `你是 Foundation 一致性审查员，不负责补写设定。只输出一个 JSON 对象。检查题材承诺、世界规则、角色动机、角色秘密与关系揭示计划、故事阶段、信息揭示、文风和开篇基线是否互相一致。planningMode 为 rolling 时，Foundation 只审批固定规模的全书路线图，逐章细节将在章节规划前结合最新 State 生成；不得因为不存在预生成的逐章细纲而报错，也不得要求补写全书逐章细纲。rolling 模式的 narrative_planning 与 outline_planning 都是从角色秘密、关系揭示计划和 story_architecture 确定性编译的派生文档；若其语义有问题，issue.target 必须指向 character_design、relationship_design 或 story_architecture，禁止把这两个派生节点作为重写目标。秘密正文归 character_design，秘密持有者和计划揭示章节归 relationship_design；短篇完整大纲模式的事实揭示时序及 knownInitiallyBy 归 narrative_planning，rolling 模式则派生自 relationship_design；开篇认知记录归 continuity_baseline。knownInitiallyBy 只能包含故事开篇前已经知道完整事实的角色。issue.target 必须指向真正拥有待修改字段的节点。${options.upgradeSource ? "这是旧项目升级；还必须逐项对照 legacyUpgradeReference，任何与已批准章节、既有设定、事实账本或角色认知冲突的内容都不得通过。" : ""}严格使用契约：${JSON.stringify(REVIEW_CONTRACT)}。target 只能取：${FOUNDATION_REWRITE_ORDER.join(",")}。通过时 issues 与 rewriteTargets 必须为空；未通过时指出最早产生问题的节点。`,
           JSON.stringify(foundationReviewInput(context.state, options.upgradeSource)),
-          parseFoundationReview,
+          (text) => {
+            const review = parseFoundationReview(text);
+            if (context.state.novelOutline?.planningMode === "rolling"
+              && review.rewriteTargets.some((target) => target === NARRATIVE_NODE || target === OUTLINE_NODE)) {
+              throw new OutputContractError(
+                "foundation_review.rewriteTargets",
+                "rolling 节奏表与路线图是确定性派生文档；请把问题指向 character_design、relationship_design 或 story_architecture",
+              );
+            }
+            return review;
+          },
+          { maxOutputTokens: 2_048, thinkingLevel: "off" },
         );
         context.state.foundationReview = review;
         context.state.foundationReviewAttempts += 1;
@@ -264,11 +308,47 @@ export async function runFoundationGeneration(
   checkpoints: CheckpointStore,
   sink?: GraphEventSink,
 ): Promise<GraphRunResult> {
-  state.foundationReview = null;
-  state.foundationReviewAttempts = 0;
-  state.foundationValidation = null;
+  const startNode = foundationGenerationStartNode(state);
+  const resumeOutline = startNode === OUTLINE_NODE;
+  const resumingFailure = Boolean(state.lastError) && startNode !== CHARTER_NODE;
+  if (!resumingFailure) {
+    state.foundationReview = null;
+    state.foundationReviewAttempts = 0;
+    state.foundationValidation = null;
+  }
   state.foundationSnapshot = null;
-  return createFoundationEngine(dependencies, checkpoints).run(state, CHARTER_NODE, sink);
+  state.foundationOutlineProgress = resumeOutline ? state.foundationOutlineProgress : null;
+  return createFoundationEngine(dependencies, checkpoints).run(state, startNode, sink);
+}
+
+function foundationGenerationStartNode(state: GraphNovelState): string {
+  const failedNode = state.lastError?.nodeKey;
+  const restartable = new Set<string>([...FOUNDATION_DOCUMENT_ORDER, VALIDATION_NODE, REVIEW_NODE]);
+  const legacyOutlineResume = Boolean(
+    (state.foundationOutlineProgress?.status === "failed" || state.foundationOutlineProgress?.status === "running")
+      && state.foundationOutlineProgress.nextChapter <= state.targetTotalChapters,
+  );
+  if (legacyOutlineResume) return OUTLINE_NODE;
+  if (!failedNode || !restartable.has(failedNode)) return CHARTER_NODE;
+  const failedIndex = FOUNDATION_DOCUMENT_ORDER.indexOf(failedNode as FoundationRewriteTarget);
+  const requiredThrough = failedIndex >= 0 ? failedIndex : FOUNDATION_DOCUMENT_ORDER.length;
+  for (let index = 0; index < requiredThrough; index += 1) {
+    const key = FOUNDATION_DOCUMENT_ORDER[index]!;
+    if (!foundationDocumentAvailable(state, key) || state.foundationDocuments[key]?.status !== "current") return key;
+  }
+  return failedNode;
+}
+
+function foundationDocumentAvailable(state: GraphNovelState, key: FoundationRewriteTarget): boolean {
+  if (key === CHARTER_NODE) return Boolean(state.creativeCharter);
+  if (key === WORLD_NODE) return Boolean(state.worldSetting);
+  if (key === CHARACTER_NODE) return state.characters.length > 0;
+  if (key === RELATIONSHIP_NODE) return Boolean(state.relationshipMap);
+  if (key === ARCHITECTURE_NODE) return Boolean(state.storyArchitecture);
+  if (key === NARRATIVE_NODE) return Boolean(state.narrativePlan);
+  if (key === OUTLINE_NODE) return Boolean(state.novelOutline);
+  if (key === STYLE_NODE) return Boolean(state.styleGuide);
+  return Boolean(state.continuityBaseline);
 }
 
 export function isLegacyFoundationProject(state: GraphNovelState): boolean {
@@ -409,16 +489,15 @@ function contractedNode<T>(
     async run(context) {
       const nodeInput = {
         ...input(context.state),
-        foundationRegistry: context.state.foundationRegistry,
+        registryCatalog: registryCatalogFor(context.state, key),
         revision: revisionContext(context.state, key),
         ...(upgradeSource ? { legacyUpgradeReference: legacyReferenceForNode(upgradeSource, key) } : {}),
-        outputContract: contract,
       };
       const value = await runContractedNode(
         context,
         dependencies,
         key,
-        `你是${role}。只输出${outputKind}，不要 Markdown 代码围栏、解释或额外文字。所有契约字段都必须存在，禁止 null；除明确允许为空的数组或字符串外，内容必须具体且可执行。严格使用契约：${JSON.stringify(contract)}。不得违背已确定的上游文档。${upgradeSource ? "这是旧项目结构化升级。legacyUpgradeReference 是不可改写的既有正文与设定证据；只能补齐结构、稳定 ID 和缺失计划，禁止改变已经确立的世界事实、角色核心设定、章节标题、摘要和关键事件。" : ""}`,
+        `你是${role}。只输出${outputKind}，不要 Markdown 代码围栏、解释或额外文字。所有契约字段都必须存在，禁止 null；除明确允许为空的数组或字符串外，内容必须具体且可执行。严格使用契约：${JSON.stringify(contract)}。这是有界结构化任务，务必简洁，禁止扩写契约外字段。registryCatalog 是唯一允许引用的 ID 白名单，不得自行创建引用 ID。不得违背已确定的上游文档。${upgradeSource ? "这是旧项目结构化升级。legacyUpgradeReference 是不可改写的既有正文与设定证据；只能补齐结构、稳定 ID 和缺失计划，禁止改变已经确立的世界事实、角色核心设定、章节标题、摘要和关键事件。" : ""}`,
         JSON.stringify(nodeInput),
         (text) => {
           const parsed = parser(text, context.state);
@@ -427,12 +506,550 @@ function contractedNode<T>(
           assertLegacyUpgradeValue(key, preserved, upgradeSource);
           return preserved;
         },
+        { maxOutputTokens: foundationOutputBudget(key), thinkingLevel: "off" },
       );
       apply(context.state, value);
       recordFoundationDocument(context.state, key, nodeInput, value);
       return { status: "completed" };
     },
   };
+}
+
+function relationshipNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  const generated = contractedNode(
+    RELATIONSHIP_NODE,
+    "人物关系与秘密揭示调度师",
+    RELATIONSHIP_CONTRACT,
+    parseRelationshipMap,
+    (state) => ({
+      creativeCharter: state.creativeCharter,
+      worldSetting: compactWorld(state),
+      characters: compactCharacters(state),
+    }),
+    (state, value) => { state.relationshipMap = value; },
+    dependencies,
+    upgradeSource,
+  );
+  return {
+    key: RELATIONSHIP_NODE,
+    async run(context) {
+      if (context.state.targetTotalChapters <= OUTLINE_BATCH_THRESHOLD) {
+        return generated.run(context);
+      }
+      const nodeInput = {
+        planningMode: "deterministic",
+        targetTotalChapters: context.state.targetTotalChapters,
+        characterDocumentHash: context.state.foundationDocuments[CHARACTER_NODE]?.outputHash ?? null,
+        existingRelationshipHash: context.state.relationshipMap ? hashValue(context.state.relationshipMap) : null,
+        repairIssues: revisionContext(context.state, RELATIONSHIP_NODE),
+      };
+      const value = compileLongRelationshipMap(context.state);
+      context.state.relationshipMap = value;
+      recordFoundationDocument(context.state, RELATIONSHIP_NODE, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function architectureNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  if (upgradeSource) {
+    return contractedNode(
+      ARCHITECTURE_NODE,
+      "长篇故事架构师",
+      ARCHITECTURE_CONTRACT,
+      (text, state) => parseStoryArchitecture(text, state.targetTotalChapters),
+      architecturePlanningInput,
+      (state, value) => { state.storyArchitecture = value; },
+      dependencies,
+      upgradeSource,
+    );
+  }
+  return {
+    key: ARCHITECTURE_NODE,
+    async run(context) {
+      const nodeInput = {
+        ...architecturePlanningInput(context.state),
+        registryCatalog: registryCatalogFor(context.state, ARCHITECTURE_NODE),
+        revision: revisionContext(context.state, ARCHITECTURE_NODE),
+      };
+      const intent = await runContractedNode(
+        context,
+        dependencies,
+        ARCHITECTURE_NODE,
+        `你是长篇故事架构师。只输出 JSON，不要解释。你只负责固定规模的全书宏观阶段语义，不输出章节范围或人物里程碑；这些字段由 Graph 引擎确定性编译。全书阶段最多 8 个，所有字段严格遵守契约且保持简洁：${JSON.stringify(ARCHITECTURE_INTENT_CONTRACT)}`,
+        JSON.stringify(nodeInput),
+        parseStoryArchitectureIntent,
+        { maxOutputTokens: 4_096, thinkingLevel: "off" },
+      );
+      const value = compileStoryArchitecture(intent, context.state);
+      context.state.storyArchitecture = value;
+      recordFoundationDocument(context.state, ARCHITECTURE_NODE, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function narrativeNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  const generated = contractedNode(
+    NARRATIVE_NODE,
+    "节奏、伏笔与信息流设计师",
+    NARRATIVE_PLAN_CONTRACT,
+    (text, state) => parseNarrativePlan(text, state.targetTotalChapters),
+    (state) => ({
+      creativeCharter: state.creativeCharter,
+      characters: state.characters,
+      relationshipMap: state.relationshipMap,
+      storyArchitecture: state.storyArchitecture,
+      targetTotalChapters: state.targetTotalChapters,
+    }),
+    (state, value) => { state.narrativePlan = value; },
+    dependencies,
+    upgradeSource,
+  );
+  return {
+    key: NARRATIVE_NODE,
+    async run(context) {
+      if (context.state.targetTotalChapters <= OUTLINE_BATCH_THRESHOLD) {
+        return generated.run(context);
+      }
+      const nodeInput = {
+        planningMode: "rolling",
+        targetTotalChapters: context.state.targetTotalChapters,
+        storyArchitecture: context.state.storyArchitecture,
+        relationshipMap: context.state.relationshipMap,
+      };
+      const value = normalizeNarrativePlanIds(buildRollingNarrativePlan(context.state), context.state);
+      context.state.narrativePlan = value;
+      recordFoundationDocument(context.state, NARRATIVE_NODE, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function baselineNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  const generated = contractedNode(
+    BASELINE_NODE,
+    "开篇连续性建档员",
+    BASELINE_CONTRACT,
+    (text, state) => alignBaselineKnowledge(parseContinuityBaseline(text), state),
+    baselinePlanningInput,
+    (state, value) => { state.continuityBaseline = value; },
+    dependencies,
+    upgradeSource,
+  );
+  return {
+    key: BASELINE_NODE,
+    async run(context) {
+      if (context.state.targetTotalChapters <= OUTLINE_BATCH_THRESHOLD) {
+        return generated.run(context);
+      }
+      const nodeInput = {
+        planningMode: "deterministic",
+        worldDocumentHash: context.state.foundationDocuments[WORLD_NODE]?.outputHash ?? null,
+        characterDocumentHash: context.state.foundationDocuments[CHARACTER_NODE]?.outputHash ?? null,
+        relationshipDocumentHash: context.state.foundationDocuments[RELATIONSHIP_NODE]?.outputHash ?? null,
+        narrativeDocumentHash: context.state.foundationDocuments[NARRATIVE_NODE]?.outputHash ?? null,
+      };
+      const value = compileLongContinuityBaseline(context.state);
+      context.state.continuityBaseline = value;
+      recordFoundationDocument(context.state, BASELINE_NODE, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function outlineNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  return {
+    key: OUTLINE_NODE,
+    async run(context) {
+      if (context.state.targetTotalChapters > OUTLINE_BATCH_THRESHOLD) {
+        const nodeInput = {
+          planningMode: "rolling",
+          targetTotalChapters: context.state.targetTotalChapters,
+          storyArchitecture: context.state.storyArchitecture,
+          narrativePlan: context.state.narrativePlan,
+        };
+        const value = buildRollingNovelOutline(context.state);
+        context.state.novelOutline = value;
+        context.state.foundationOutlineProgress = null;
+        recordFoundationDocument(context.state, OUTLINE_NODE, nodeInput, value);
+        return { status: "completed" };
+      }
+
+      const nodeInput = {
+        creativeCharter: context.state.creativeCharter,
+        worldSetting: context.state.worldSetting,
+        characters: context.state.characters,
+        relationshipMap: context.state.relationshipMap,
+        storyArchitecture: context.state.storyArchitecture,
+        narrativePlan: context.state.narrativePlan,
+        targetTotalChapters: context.state.targetTotalChapters,
+        targetTotalWords: context.state.targetTotalWords,
+        foundationRegistry: context.state.foundationRegistry,
+        revision: revisionContext(context.state, OUTLINE_NODE),
+        ...(upgradeSource ? { legacyUpgradeReference: legacyReferenceForNode(upgradeSource, OUTLINE_NODE) } : {}),
+        outputContract: OUTLINE_CONTRACT,
+      };
+      const value = await runContractedNode(
+        context,
+        dependencies,
+        OUTLINE_NODE,
+        outlineSystemPrompt(OUTLINE_CONTRACT, upgradeSource),
+        JSON.stringify(nodeInput),
+        (text) => {
+          const parsed = parseFoundationOutline(text, context.state);
+          if (!upgradeSource) return parsed;
+          const preserved = preserveLegacyUpgradeValue(OUTLINE_NODE, parsed, upgradeSource, context.state);
+          assertLegacyOutline(preserved as NovelOutline, upgradeSource.novelOutline);
+          return preserved;
+        },
+        { maxOutputTokens: foundationOutputBudget(OUTLINE_NODE), thinkingLevel: "off" },
+      );
+      context.state.novelOutline = value;
+      context.state.foundationOutlineProgress = null;
+      recordFoundationDocument(context.state, OUTLINE_NODE, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function outlineSystemPrompt(contract: unknown, upgradeSource?: LegacyFoundationSource): string {
+  return `你是全书章节大纲规划师。只输出 JSON，不要 Markdown、解释或额外文字。严格使用契约：${JSON.stringify(contract)}。所有章节必须遵守已确定的 Foundation 文档、角色 ID、地点 ID、规则 ID、伏笔和信息揭示计划。所有 *Id 字段只能逐字复制输入 foundationRegistry 中对应的 id，禁止根据名称推测、翻译、缩写或创造新 ID。章节大纲阶段禁止创建未登记的角色、地点、势力或规则；若确实需要新设定，必须返回失败并回到 Foundation 阶段处理。${upgradeSource ? "这是旧项目升级，不得改变已批准正文和既有章节关键事实。" : ""}`;
+}
+
+function compactOutline(outline: NovelOutline | null): unknown {
+  if (!outline) return null;
+  if (outline.planningMode === "rolling") {
+    return {
+      planningMode: outline.planningMode,
+      targetLength: outline.targetLength,
+      roadmapSegments: outline.roadmapSegments,
+    };
+  }
+  return {
+    genre: outline.genre,
+    premise: outline.premise,
+    theme: outline.theme,
+    targetLength: outline.targetLength,
+    chapterOutlines: outline.chapterOutlines.map((chapter) => ({
+      chapterNumber: chapter.chapterNumber,
+      title: chapter.title,
+      summary: chapter.summary,
+      chapterGoal: chapter.chapterGoal,
+      conflict: chapter.conflict,
+      chapterHook: chapter.chapterHook,
+      storyArcIds: chapter.storyArcIds,
+    })),
+  };
+}
+
+function reviewOutlineDigest(outline: NovelOutline | null): unknown {
+  if (!outline) return null;
+  if (outline.planningMode === "rolling") return compactOutline(outline);
+  return {
+    genre: outline.genre,
+    premise: outline.premise,
+    theme: outline.theme,
+    targetLength: outline.targetLength,
+    chapterOutlines: outline.chapterOutlines.map((chapter) => ({
+      chapterNumber: chapter.chapterNumber,
+      title: chapter.title,
+      summary: chapter.summary,
+      povCharacterId: chapter.povCharacterId,
+      involvedCharacterIds: chapter.involvedCharacterIds,
+      locationIds: chapter.locationIds,
+      factionIds: chapter.factionIds,
+      requiredSystemIds: chapter.requiredSystemIds,
+      requiredRuleIds: chapter.requiredRuleIds,
+      storyArcIds: chapter.storyArcIds,
+      chapterGoal: chapter.chapterGoal,
+      conflict: chapter.conflict,
+      causalPrerequisites: chapter.causalPrerequisites,
+      keyEvents: chapter.keyEvents,
+      turningPoint: chapter.turningPoint,
+      payoff: chapter.payoff,
+      chapterHook: chapter.chapterHook,
+      revealedSecretIds: chapter.revealedSecretIds,
+      revealedFactIds: chapter.revealedFactIds,
+      foreshadowingToPlant: chapter.foreshadowingToPlant,
+      foreshadowingToPayOff: chapter.foreshadowingToPayOff,
+    })),
+  };
+}
+
+function compactWorld(state: GraphNovelState) {
+  const world = state.worldSetting;
+  if (!world) return null;
+  return {
+    era: world.era,
+    location: world.location,
+    magicSystem: world.magicSystem,
+    technologyLevel: world.technologyLevel,
+    socialStructure: world.socialStructure,
+    rulesAndLaws: world.rulesAndLaws,
+    keyLocations: (world.keyLocations ?? []).map(({ locationId, name, roleInStory }) => ({ locationId, name, roleInStory })),
+    factions: (world.factions ?? []).map(({ factionId, name, goal }) => ({ factionId, name, goal })),
+    powerSystem: world.powerSystem ? {
+      systemId: world.powerSystem.systemId,
+      capabilities: world.powerSystem.capabilities,
+      limitations: world.powerSystem.limitations,
+      costs: world.powerSystem.costs,
+    } : null,
+    rules: (world.rules ?? []).map(({ ruleId, statement, consequence }) => ({ ruleId, statement, consequence })),
+  };
+}
+
+function compactCharacters(state: GraphNovelState) {
+  return state.characters.map((character) => ({
+    characterId: character.characterId,
+    name: character.name,
+    role: character.role,
+    personality: character.personality,
+    motivation: character.motivation,
+    arcDescription: character.arcDescription,
+    secrets: character.secrets,
+  }));
+}
+
+function compileLongRelationshipMap(state: GraphNovelState): RelationshipMap {
+  const characters = state.characters.filter((character) => Boolean(character.characterId));
+  const characterIds = new Set(characters.map((character) => character.characterId!));
+  const existing = state.relationshipMap;
+  const relationships = (existing?.relationships ?? [])
+    .filter((relationship) => (
+      relationship.fromCharacterId
+      && relationship.toCharacterId
+      && relationship.fromCharacterId !== relationship.toCharacterId
+      && characterIds.has(relationship.fromCharacterId)
+      && characterIds.has(relationship.toCharacterId)
+    ))
+    .map((relationship) => ({
+      fromCharacterId: relationship.fromCharacterId,
+      toCharacterId: relationship.toCharacterId,
+      nature: relationship.nature,
+      currentState: relationship.currentState,
+      tension: relationship.tension,
+      hiddenInformation: relationship.hiddenInformation,
+    }));
+  if (relationships.length === 0 && characters.length > 1) {
+    const protagonist = characters.find((character) => /protagonist|主角/i.test(character.role)) ?? characters[0]!;
+    for (const character of characters) {
+      if (character.characterId === protagonist.characterId) continue;
+      relationships.push({
+        fromCharacterId: protagonist.characterId,
+        toCharacterId: character.characterId,
+        nature: relationshipNature(character),
+        currentState: `${protagonist.name}与${character.name}围绕各自目标形成尚未定型的关系`,
+        tension: clipText(character.fear || character.motivation, 180),
+        hiddenInformation: character.secrets?.length
+          ? `双方尚未共享与${character.secrets.map((secret) => secret.content).join("；")}相关的完整信息`
+          : "双方尚未完全掌握彼此的目标、底线和可验证证据",
+      });
+    }
+  }
+
+  const existingSecrets = new Map((existing?.secrets ?? []).map((secret) => [secret.secretId, secret]));
+  const canonicalSecrets = characters.flatMap((character) => (
+    (character.secrets ?? []).map((secret) => ({ character, secret }))
+  ));
+  const protagonistId = (characters.find((character) => /protagonist|主角/i.test(character.role)) ?? characters[0])?.characterId;
+  const secrets = canonicalSecrets.map(({ character, secret }, index) => {
+    const previous = existingSecrets.get(secret.secretId);
+    const holders = uniqueIds([
+      ...(previous?.holders ?? []).filter((id) => characterIds.has(id)),
+      character.characterId,
+    ]);
+    const affectedCharacters = uniqueIds(
+      (previous?.affectedCharacters ?? []).filter((id) => characterIds.has(id)),
+    );
+    if (affectedCharacters.length === 0) {
+      affectedCharacters.push(...uniqueIds([protagonistId, character.characterId]));
+    }
+    return {
+      secretId: secret.secretId,
+      holders,
+      affectedCharacters,
+      plannedReveal: previous?.plannedReveal?.trim()
+        || `通过相关人物的选择、证据与关系冲突逐步揭示“${clipText(secret.content, 120)}”`,
+      plannedRevealChapter: validRevealChapter(previous?.plannedRevealChapter, state.targetTotalChapters)
+        ?? scheduledRevealChapter(index, canonicalSecrets.length, state.targetTotalChapters),
+    };
+  });
+  return { relationships, secrets };
+}
+
+function relationshipNature(character: Character): string {
+  if (/反派|敌|antagonist/i.test(character.role)) return "目标冲突与利益对立";
+  if (/父|母|兄|弟|姐|妹|亲|family/i.test(character.role)) return "亲缘、责任与未解事实交织";
+  if (/盟|友|伙伴|同伴|ally/i.test(character.role)) return "合作关系与信任成长";
+  return "目标、利益与信息不对称形成的关联";
+}
+
+function scheduledRevealChapter(index: number, count: number, totalChapters: number): number {
+  if (count <= 1) return totalChapters;
+  const progress = 0.15 + (0.75 * index) / (count - 1);
+  return Math.max(1, Math.min(totalChapters, Math.round(totalChapters * progress)));
+}
+
+function validRevealChapter(value: number | undefined, totalChapters: number): number | null {
+  return Number.isSafeInteger(value) && value! >= 1 && value! <= totalChapters ? value! : null;
+}
+
+function uniqueIds(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))];
+}
+
+function compactCharacterVoices(state: GraphNovelState) {
+  return state.characters.map(({ characterId, name, role, voice }) => ({ characterId, name, role, voice }));
+}
+
+function architecturePlanningInput(state: GraphNovelState) {
+  return {
+    creativeCharter: state.creativeCharter,
+    worldSetting: compactWorld(state),
+    characters: architectureCharacterDigest(state),
+    relationshipMap: relationshipDigest(state),
+    targetTotalChapters: state.targetTotalChapters,
+  };
+}
+
+function architectureCharacterDigest(state: GraphNovelState) {
+  return state.characters.map((character) => ({
+    characterId: character.characterId,
+    name: character.name,
+    role: clipText(character.role, 120),
+    motivation: clipText(character.motivation, 160),
+    arcDescription: clipText(character.arcDescription, 160),
+    secretCount: character.secrets?.length ?? 0,
+  }));
+}
+
+function relationshipDigest(state: GraphNovelState) {
+  const relationshipMap = state.relationshipMap;
+  return {
+    relationshipCount: relationshipMap?.relationships.length ?? 0,
+    secretCount: relationshipMap?.secrets.length ?? 0,
+    relationships: (relationshipMap?.relationships ?? []).slice(0, 24).map((relationship) => ({
+      fromCharacterId: relationship.fromCharacterId,
+      toCharacterId: relationship.toCharacterId,
+      nature: clipText(relationship.nature, 100),
+      tension: clipText(relationship.tension, 140),
+    })),
+    revealSamples: sampleEvenly(relationshipMap?.secrets ?? [], 12).map((secret) => ({
+      secretId: secret.secretId,
+      holders: secret.holders.slice(0, 4),
+      affectedCharacters: secret.affectedCharacters.slice(0, 4),
+      plannedRevealChapter: secret.plannedRevealChapter,
+    })),
+  };
+}
+
+function narrativeDigest(state: GraphNovelState) {
+  const narrative = state.narrativePlan;
+  return narrative ? {
+    pacingPrinciples: narrative.pacingPrinciples.slice(0, 12).map((item) => clipText(item, 180)),
+    payoffSchedule: narrative.payoffSchedule.slice(0, 12),
+    foreshadowingCount: narrative.foreshadowingPlan.length,
+    revelationCount: narrative.revelationPlan.length,
+    foreshadowingSamples: sampleEvenly(narrative.foreshadowingPlan, 12),
+    revelationSamples: sampleEvenly(narrative.revelationPlan, 12),
+  } : null;
+}
+
+function baselineDigest(state: GraphNovelState) {
+  const baseline = state.continuityBaseline;
+  return baseline ? {
+    storyTime: baseline.storyTime,
+    locatedCharacterCount: Object.keys(baseline.characterLocations).length,
+    conditionCount: Object.keys(baseline.characterConditions).length,
+    resourceCount: Object.keys(baseline.resources).length,
+    initialFactCount: baseline.initialFacts.length,
+    initialKnowledgeCount: baseline.initialKnowledge.length,
+    initialFactSamples: sampleEvenly(baseline.initialFacts, 12),
+    initialKnowledgeSamples: sampleEvenly(baseline.initialKnowledge, 12),
+  } : null;
+}
+
+function registryDigest(state: GraphNovelState) {
+  const entries = state.foundationRegistry?.entries ?? [];
+  const counts = entries.reduce<Record<string, number>>((result, entry) => {
+    result[entry.kind] = (result[entry.kind] ?? 0) + 1;
+    return result;
+  }, {});
+  return { counts, samples: sampleEvenly(entries, 16).map(({ id, kind, label }) => ({ id, kind, label: clipText(label, 120) })) };
+}
+
+function sampleEvenly<T>(items: T[], maximum: number): T[] {
+  if (items.length <= maximum) return [...items];
+  return Array.from({ length: maximum }, (_, index) => items[Math.floor((index * (items.length - 1)) / (maximum - 1))]!);
+}
+
+function compileStoryArchitecture(intent: StoryArchitectureIntent, state: GraphNovelState): StoryArchitecture {
+  const plannedArcs = intent.storyArcs.slice(0, Math.max(1, Math.min(intent.storyArcs.length, state.targetTotalChapters)));
+  const totalWeight = plannedArcs.reduce((sum, arc) => sum + arc.weight, 0);
+  let allocatedWeight = 0;
+  let start = 1;
+  const storyArcs = plannedArcs.map((arc, index) => {
+    allocatedWeight += arc.weight;
+    const end = index === plannedArcs.length - 1
+      ? state.targetTotalChapters
+      : Math.max(start, Math.min(
+        state.targetTotalChapters - (plannedArcs.length - index - 1),
+        Math.round((allocatedWeight / totalWeight) * state.targetTotalChapters),
+      ));
+    const compiled = {
+      arcId: arc.arcId ?? `arc_${slugId(arc.name)}`,
+      name: arc.name,
+      chapterRange: `${start}-${end}`,
+      objective: arc.objective,
+      opposition: arc.opposition,
+      turningPoint: arc.turningPoint,
+      outcome: arc.outcome,
+    };
+    start = end + 1;
+    return compiled;
+  });
+  const usedIds = new Set(registryCatalogFor(state, ARCHITECTURE_NODE).map((entry) => entry.id));
+  storyArcs.forEach((arc, index) => { arc.arcId = uniqueArchitectureId(arc.arcId!, index, usedIds); usedIds.add(arc.arcId!); });
+  return {
+    centralConflict: intent.centralConflict,
+    stakes: intent.stakes,
+    endingDirection: intent.endingDirection,
+    storyArcs,
+    characterArcMilestones: state.characters.map((character) => ({
+      characterId: character.characterId,
+      startingState: character.personality,
+      milestones: [character.arcDescription],
+      endingState: `完成角色弧：${character.arcDescription}`,
+    })),
+  };
+}
+
+function slugId(value: string): string {
+  const ascii = value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return ascii || "stage";
+}
+
+function uniqueArchitectureId(requested: string, index: number, used: Set<string>): string {
+  let candidate = requested;
+  let suffix = index + 1;
+  while (used.has(candidate)) candidate = `${requested}_${suffix++}`;
+  return candidate;
 }
 
 function edge(from: string, to: string, reason: string) {
@@ -460,26 +1077,184 @@ function revisionContext(state: GraphNovelState, node: FoundationRewriteTarget) 
       ? state.foundationValidation.issues.filter((issue) => issue.target === node)
       : [],
     reviewIssues: state.foundationReview?.issues.filter((issue) => issue.target === node) ?? [],
-    allReviewIssues: state.foundationReview?.passed === false ? state.foundationReview.issues : [],
   };
+}
+
+function foundationOutputBudget(node: FoundationRewriteTarget): number {
+  if (node === CHARTER_NODE || node === STYLE_NODE) return 2_048;
+  if (node === WORLD_NODE || node === RELATIONSHIP_NODE || node === ARCHITECTURE_NODE) return 4_096;
+  return 6_144;
+}
+
+function registryCatalogFor(state: GraphNovelState, node: FoundationRewriteTarget) {
+  const nodeIndex = FOUNDATION_DOCUMENT_ORDER.indexOf(node);
+  if (nodeIndex <= 0) return [];
+  const allowedOwners = new Set(FOUNDATION_DOCUMENT_ORDER.slice(0, nodeIndex).filter((owner) => (
+    state.foundationDocuments[owner]?.status === "current"
+  )));
+  return (state.foundationRegistry?.entries ?? [])
+    .filter((entry) => allowedOwners.has(entry.owner))
+    .map(({ id, kind, label }) => ({ id, kind, label }));
 }
 
 function foundationReviewInput(state: GraphNovelState, upgradeSource?: LegacyFoundationSource) {
   return {
     targetTotalChapters: state.targetTotalChapters,
     creativeCharter: state.creativeCharter,
-    worldSetting: state.worldSetting,
-    characters: state.characters,
-    relationshipMap: state.relationshipMap,
+    worldSetting: compactWorld(state),
+    characters: architectureCharacterDigest(state),
+    relationshipMap: relationshipDigest(state),
     storyArchitecture: state.storyArchitecture,
-    narrativePlan: state.narrativePlan,
-    novelOutline: state.novelOutline,
+    narrativePlan: narrativeDigest(state),
+    outlineDigest: reviewOutlineDigest(state.novelOutline),
     styleGuide: state.styleGuide,
-    continuityBaseline: state.continuityBaseline,
-    foundationRegistry: state.foundationRegistry,
+    continuityBaseline: baselineDigest(state),
+    registrySummary: registryDigest(state),
     deterministicValidation: state.foundationValidation,
-    ...(upgradeSource ? { legacyUpgradeReference: upgradeSource } : {}),
-    outputContract: REVIEW_CONTRACT,
+    ...(upgradeSource ? { legacyUpgradeReference: legacyReviewReference(upgradeSource) } : {}),
+  };
+}
+
+function legacyReviewReference(source: LegacyFoundationSource) {
+  const chapterSummary = (chapter: LegacyFoundationSource["approvedChapters"][number]) => ({
+    chapterNumber: chapter.chapterNumber,
+    title: clipText(chapter.title),
+    summary: clipText(chapter.summary),
+    endingExcerpt: clipText(chapter.endingExcerpt),
+    unresolvedActions: chapter.unresolvedActions.slice(0, 8).map((item) => clipText(item)),
+    openThreads: chapter.openThreads.slice(0, 8).map((item) => clipText(item)),
+  });
+  const approved = source.approvedChapters;
+  return {
+    world: {
+      era: clipText(source.worldSetting.era),
+      location: clipText(source.worldSetting.location),
+      rulesAndLaws: clipText(source.worldSetting.rulesAndLaws),
+    },
+    characters: source.characters.slice(0, 24).map((character) => ({
+      characterId: character.characterId,
+      name: clipText(character.name),
+      role: clipText(character.role),
+      motivation: clipText(character.motivation),
+      arcDescription: clipText(character.arcDescription),
+    })),
+    outline: {
+      genre: clipText(source.novelOutline.genre),
+      premise: clipText(source.novelOutline.premise),
+      theme: clipText(source.novelOutline.theme),
+      targetLength: clipText(source.novelOutline.targetLength),
+      chapterCount: source.novelOutline.chapterOutlines.length,
+    },
+    approvedChapterCount: approved.length,
+    approvedChapterSamples: uniqueByChapter([
+      ...approved.slice(0, 2),
+      ...approved.slice(-6),
+    ]).map(chapterSummary),
+    narrativeFactCount: source.narrativeFacts.length,
+    latestFacts: source.narrativeFacts.slice(-32).map((fact) => ({
+      factId: fact.factId,
+      statement: clipText(fact.statement),
+      establishedInChapter: fact.establishedInChapter,
+    })),
+  };
+}
+
+function clipText(value: string, maximum = 300): string {
+  return value.length <= maximum ? value : `${value.slice(0, maximum)}...`;
+}
+
+function uniqueByChapter<T extends { chapterNumber: number }>(items: T[]): T[] {
+  return [...new Map(items.map((item) => [item.chapterNumber, item])).values()];
+}
+
+function sampleByChapter<T extends { chapterNumber: number }>(items: T[]): T[] {
+  return uniqueByChapter([...items.slice(0, 2), ...items.slice(-6)]);
+}
+
+function baselinePlanningInput(state: GraphNovelState) {
+  const openingFacts = (state.narrativePlan?.revelationPlan ?? [])
+    .filter((item) => item.knownInitiallyBy.length > 0 || item.earliestChapter <= 1)
+    .map(({ factId, information, knownInitiallyBy, earliestChapter }) => ({ factId, information, knownInitiallyBy, earliestChapter }));
+  return {
+    worldSetting: compactWorld(state),
+    characters: compactCharacters(state),
+    relationshipSecrets: (state.relationshipMap?.secrets ?? []).map(({ secretId, holders, affectedCharacters, plannedRevealChapter }) => ({
+      secretId, holders, affectedCharacters, plannedRevealChapter,
+    })),
+    openingFacts,
+    openingRoadmap: (state.novelOutline?.roadmapSegments ?? []).slice(0, 1),
+  };
+}
+
+function compileLongContinuityBaseline(state: GraphNovelState): ContinuityBaseline {
+  const locationIds = state.worldSetting?.keyLocations?.map((location) => location.locationId) ?? [];
+  const locationIdSet = new Set(locationIds);
+  const defaultLocation = locationIds[0];
+  const characterIds = new Set(state.characters.flatMap((character) => character.characterId ? [character.characterId] : []));
+  const existing = state.continuityBaseline;
+  const characterLocations = Object.fromEntries(Object.entries(existing?.characterLocations ?? {}).filter(
+    ([characterId, locationId]) => characterIds.has(characterId) && locationIdSet.has(locationId),
+  ));
+  const characterConditions = Object.fromEntries(Object.entries(existing?.characterConditions ?? {}).filter(
+    ([characterId]) => characterIds.has(characterId),
+  ));
+  const resources = Object.fromEntries(Object.entries(existing?.resources ?? {}).filter(
+    ([characterId]) => characterIds.has(characterId),
+  ));
+  for (const character of state.characters) {
+    if (!character.characterId) continue;
+    if (!characterLocations[character.characterId] && defaultLocation) characterLocations[character.characterId] = defaultLocation;
+    characterConditions[character.characterId] ??= `故事开篇时保持“${clipText(character.personality, 120)}”的常态，核心压力来自“${clipText(character.fear || character.motivation, 120)}”`;
+    resources[character.characterId] ??= `仅拥有角色设定中已经明确的能力与资源：${clipText((character.abilities ?? []).join("；") || "无额外资源", 180)}`;
+  }
+  const openingFacts = (state.narrativePlan?.revelationPlan ?? []).filter((fact) => (
+    fact.knownInitiallyBy.length > 0 || fact.earliestChapter <= 1
+  ));
+  const openingFactIds = new Set(openingFacts.map((fact) => fact.factId));
+  const existingFacts = new Map((existing?.initialFacts ?? []).map((fact) => [fact.factId, fact]));
+  const validFactIds = new Set([
+    ...(existing?.initialFacts ?? []).map((fact) => fact.factId),
+    ...(state.narrativePlan?.revelationPlan ?? []).map((fact) => fact.factId),
+    ...state.narrativeFacts.map((fact) => fact.factId),
+  ]);
+  const validExistingKnowledge = (existing?.initialKnowledge ?? []).filter((item) => (
+    item.characterId
+    && characterIds.has(item.characterId)
+    && validFactIds.has(item.factId)
+    && (!item.sourceCharacterId || characterIds.has(item.sourceCharacterId))
+    && (item.sourceType !== "told" || Boolean(item.sourceCharacterId && characterIds.has(item.sourceCharacterId)))
+  ));
+  const existingKnowledge = new Map(validExistingKnowledge
+    .map((item) => [`${item.factId}\u0000${item.characterId}`, item]));
+  const retainedKnowledge = validExistingKnowledge.filter((item) => !openingFactIds.has(item.factId));
+  return {
+    storyTime: existing?.storyTime?.trim() || "故事开篇，第一章事件发生前",
+    characterLocations,
+    characterConditions,
+    resources,
+    initialFacts: [
+      ...(existing?.initialFacts ?? []).filter((fact) => !openingFactIds.has(fact.factId)),
+      ...openingFacts.map((fact) => ({
+        factId: fact.factId,
+        statement: fact.information,
+        category: existingFacts.get(fact.factId)?.category ?? "foundation",
+        visibility: existingFacts.get(fact.factId)?.visibility
+          ?? (fact.knownInitiallyBy.length > 0 ? "仅初始知情角色可确认" : "第一章可通过行动验证"),
+      })),
+    ],
+    initialKnowledge: [
+      ...retainedKnowledge,
+      ...openingFacts.flatMap((fact) => fact.knownInitiallyBy.map((characterId) => (
+        existingKnowledge.get(`${fact.factId}\u0000${characterId}`) ?? {
+          factId: fact.factId,
+          characterId,
+          knowledgeLevel: "confirmed",
+          sourceType: "observed",
+          sourceCharacterId: "",
+          evidence: "角色设定与关系揭示计划明确该角色在故事开篇前已掌握完整事实",
+        }
+      ))),
+    ],
   };
 }
 
@@ -580,57 +1355,77 @@ function foundationUpgradeResumeNode(state: GraphNovelState, startedAt: string):
 }
 
 function legacyReferenceForNode(source: LegacyFoundationSource, node: FoundationRewriteTarget): unknown {
-  const chapterCanon = source.approvedChapters.map(({ textSample: _textSample, ...chapter }) => chapter);
+  const chapterCanon = sampleByChapter(source.approvedChapters).map((chapter) => ({
+    chapterNumber: chapter.chapterNumber,
+    title: clipText(chapter.title),
+    summary: clipText(chapter.summary),
+    endingExcerpt: clipText(chapter.endingExcerpt),
+    unresolvedActions: chapter.unresolvedActions.slice(0, 8).map(clipText),
+    openThreads: chapter.openThreads.slice(0, 8).map(clipText),
+  }));
   const outlineSummary = {
-    ...source.novelOutline,
-    chapterOutlines: source.novelOutline.chapterOutlines.map((chapter) => ({
+    genre: source.novelOutline.genre,
+    premise: source.novelOutline.premise,
+    theme: source.novelOutline.theme,
+    targetLength: source.novelOutline.targetLength,
+    planningMode: source.novelOutline.planningMode,
+    chapterCount: source.novelOutline.chapterOutlines.length,
+    chapterSamples: sampleByChapter(source.novelOutline.chapterOutlines).map((chapter) => ({
       chapterNumber: chapter.chapterNumber,
-      title: chapter.title,
-      summary: chapter.summary,
-      keyEvents: chapter.keyEvents,
+      title: clipText(chapter.title),
+      summary: clipText(chapter.summary),
+      keyEvents: chapter.keyEvents.slice(0, 8).map((item) => clipText(item)),
     })),
   };
+  const approvedChapterCount = source.approvedChapters.length;
   if (node === CHARTER_NODE) return {
     worldSetting: source.worldSetting,
     characters: source.characters,
     novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
   };
   if (node === WORLD_NODE) return {
     worldSetting: source.worldSetting,
     novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
-    narrativeFacts: source.narrativeFacts,
+    narrativeFacts: source.narrativeFacts.slice(-64),
   };
   if (node === CHARACTER_NODE || node === RELATIONSHIP_NODE) return {
     characters: source.characters,
     ...(node === RELATIONSHIP_NODE ? { novelOutline: outlineSummary } : {}),
+    approvedChapterCount,
     approvedChapters: chapterCanon,
-    characterKnowledge: source.characterKnowledge,
-    characterArcs: source.characterArcs,
+    characterKnowledge: source.characterKnowledge.slice(-128),
+    characterArcs: Object.fromEntries(Object.entries(source.characterArcs).slice(-24)),
   };
   if (node === ARCHITECTURE_NODE) return {
-    novelOutline: source.novelOutline,
+    novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
   };
   if (node === NARRATIVE_NODE) return {
-    novelOutline: source.novelOutline,
+    novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
-    narrativeFacts: source.narrativeFacts,
-    characterKnowledge: source.characterKnowledge,
-    foreshadowings: source.foreshadowings,
+    narrativeFacts: source.narrativeFacts.slice(-64),
+    characterKnowledge: source.characterKnowledge.slice(-128),
+    foreshadowings: source.foreshadowings.slice(-64),
   };
   if (node === OUTLINE_NODE) return {
-    novelOutline: source.novelOutline,
+    novelOutline: outlineSummary,
+    approvedChapterCount,
     approvedChapters: chapterCanon,
-    narrativeFacts: source.narrativeFacts,
+    narrativeFacts: source.narrativeFacts.slice(-64),
   };
   if (node === STYLE_NODE) return {
     characters: source.characters,
-    chapterSamples: source.approvedChapters.map((chapter) => ({
+    approvedChapterCount,
+    chapterSamples: sampleByChapter(source.approvedChapters).map((chapter) => ({
       chapterNumber: chapter.chapterNumber,
-      title: chapter.title,
-      textSample: chapter.textSample,
+      title: clipText(chapter.title),
+      textSample: clipText(chapter.textSample, 600),
     })),
   };
   return {
@@ -751,21 +1546,31 @@ function normalizeNarrativePlanIds(plan: NarrativePlan, state: GraphNovelState):
   for (const arc of state.storyArchitecture?.storyArcs ?? []) {
     if (arc.arcId) reservedIds.add(arc.arcId);
   }
-  for (const foreshadowing of plan.foreshadowingPlan) reservedIds.add(foreshadowing.id);
+
+  const allocateId = (requested: string, fallbackPrefix: string, allocated: Set<string>): string => {
+    if (!reservedIds.has(requested) && !allocated.has(requested)) return requested;
+    const base = requested.startsWith(`${fallbackPrefix}_`) ? requested : `${fallbackPrefix}_${requested}`;
+    let candidate = base;
+    let suffix = 2;
+    while (reservedIds.has(candidate) || allocated.has(candidate)) candidate = `${base}_${suffix++}`;
+    return candidate;
+  };
+
+  const foreshadowingIds = new Set<string>();
+  const foreshadowingPlan = plan.foreshadowingPlan.map((item) => {
+    const id = allocateId(item.id, "foreshadow", foreshadowingIds);
+    foreshadowingIds.add(id);
+    return { ...item, id };
+  });
+  foreshadowingIds.forEach((id) => reservedIds.add(id));
 
   const factIds = new Set<string>();
   const revelationPlan = plan.revelationPlan.map((item) => {
-    let factId = item.factId;
-    if (reservedIds.has(factId) || factIds.has(factId)) {
-      const base = factId.startsWith("fact_") ? factId : `fact_${factId}`;
-      factId = base;
-      let suffix = 2;
-      while (reservedIds.has(factId) || factIds.has(factId)) factId = `${base}_${suffix++}`;
-    }
+    const factId = allocateId(item.factId, "fact", factIds);
     factIds.add(factId);
     return { ...item, factId };
   });
-  return { ...plan, revelationPlan };
+  return { ...plan, foreshadowingPlan, revelationPlan };
 }
 
 function alignUpgradeOutlineReferences(outline: NovelOutline, state: GraphNovelState): NovelOutline {
@@ -803,7 +1608,45 @@ function alignUpgradeBaselineKnowledge(
   const characterLocations = Object.fromEntries(
     Object.entries(baseline.characterLocations).filter(([, locationId]) => locationIds.has(locationId)),
   );
-  const initialKnowledge = cloneValue(baseline.initialKnowledge);
+  return alignBaselineKnowledge({ ...baseline, characterLocations }, state);
+}
+
+function alignBaselineKnowledge(
+  baseline: ContinuityBaseline,
+  state: GraphNovelState,
+): ContinuityBaseline {
+  const characterIds = new Set(state.characters.flatMap((character) => character.characterId ? [character.characterId] : []));
+  const locationIds = new Set((state.worldSetting?.keyLocations ?? []).map((location) => location.locationId));
+  const plannedFactPlans = new Map((state.narrativePlan?.revelationPlan ?? []).map((plan) => [plan.factId, plan]));
+  const plannedFacts = new Map([...plannedFactPlans].map(([factId, plan]) => [factId, plan.information]));
+  const initialFacts = baseline.initialFacts.map((fact) => {
+    const planned = plannedFacts.get(fact.factId);
+    return {
+      ...fact,
+      statement: planned !== undefined && planned.trim() === fact.statement.trim() ? planned : fact.statement,
+    };
+  });
+  const factIds = new Set([
+    ...plannedFacts.keys(),
+    ...initialFacts.map((fact) => fact.factId),
+    ...state.narrativeFacts.map((fact) => fact.factId),
+  ]);
+  const characterLocations = Object.fromEntries(Object.entries(baseline.characterLocations).filter(
+    ([characterId, locationId]) => characterIds.has(characterId) && locationIds.has(locationId),
+  ));
+  const characterConditions = Object.fromEntries(Object.entries(baseline.characterConditions).filter(
+    ([characterId]) => characterIds.has(characterId),
+  ));
+  const resources = Object.fromEntries(Object.entries(baseline.resources).filter(
+    ([characterId]) => characterIds.has(characterId),
+  ));
+  const initialKnowledge = cloneValue(baseline.initialKnowledge).filter((item) => (
+    factIds.has(item.factId)
+      && Boolean(item.characterId && characterIds.has(item.characterId))
+      && (!item.sourceCharacterId || characterIds.has(item.sourceCharacterId))
+      && (item.sourceType !== "told" || Boolean(item.sourceCharacterId && characterIds.has(item.sourceCharacterId)))
+      && (!plannedFactPlans.has(item.factId) || plannedFactPlans.get(item.factId)!.knownInitiallyBy.includes(item.characterId!))
+  ));
   const existing = new Set(initialKnowledge.map((item) => `${item.factId}\u0000${item.characterId ?? ""}`));
   for (const plan of state.narrativePlan?.revelationPlan ?? []) {
     for (const characterId of plan.knownInitiallyBy) {
@@ -820,7 +1663,14 @@ function alignUpgradeBaselineKnowledge(
       existing.add(key);
     }
   }
-  return { ...baseline, characterLocations, initialKnowledge };
+  return {
+    ...baseline,
+    characterLocations,
+    characterConditions,
+    resources,
+    initialFacts,
+    initialKnowledge,
+  };
 }
 
 function assertLegacyWorld(value: WorldSetting, legacy: WorldSetting): void {

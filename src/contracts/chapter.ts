@@ -43,6 +43,14 @@ export interface InformationFlow {
   evidence: string;
 }
 
+export interface FoundationObligations {
+  revealedSecretIds: string[];
+  revealedFactIds: string[];
+  foreshadowingToPlant: string[];
+  foreshadowingToReinforce: string[];
+  foreshadowingToPayOff: string[];
+}
+
 export interface ChapterPlan {
   contextHash: string;
   foundationDirectiveHash?: string;
@@ -53,6 +61,7 @@ export interface ChapterPlan {
   requiredFactIds: string[];
   plannedFacts: PlannedFact[];
   informationFlow: InformationFlow[];
+  foundationObligations?: FoundationObligations;
 }
 
 const KNOWLEDGE_RANK: Record<KnowledgeLevel, number> = {
@@ -104,6 +113,7 @@ function parseChapterPlanValue(
     requiredFactIds: stringArray(value.requiredFactIds, "chapter_plan.requiredFactIds"),
     plannedFacts: parsePlannedFacts(value.plannedFacts),
     informationFlow: parseInformationFlow(value.informationFlow),
+    foundationObligations: foundationObligations(context),
   };
   if (generated) plan = normalizeGeneratedFoundationFacts(plan, context);
 
@@ -135,6 +145,17 @@ function parseChapterPlanValue(
   validateNarrativeReferences(plan, context);
   validateFoundationReferences(plan, context);
   return plan;
+}
+
+function foundationObligations(context: ContinuityContextPackage): FoundationObligations {
+  const outline = context.targetOutline;
+  return {
+    revealedSecretIds: [...(outline?.revealedSecretIds ?? [])],
+    revealedFactIds: [...(outline?.revealedFactIds ?? [])],
+    foreshadowingToPlant: [...(outline?.foreshadowingToPlant ?? [])],
+    foreshadowingToReinforce: [...(outline?.foreshadowingToReinforce ?? [])],
+    foreshadowingToPayOff: [...(outline?.foreshadowingToPayOff ?? [])],
+  };
 }
 
 function normalizeGeneratedFoundationFacts(

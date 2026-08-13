@@ -24,6 +24,13 @@ import {
   runCreativeChat,
   type CreativeChatInput,
 } from "../agents/creative-chat.js";
+import {
+  runCreativeProjectDraft,
+  CreativeProjectDraftContractError,
+  type CreativeProjectDraft,
+  type CreativeProjectDraftDependencies,
+  type CreativeProjectDraftInput,
+} from "../agents/creative-project-draft.js";
 import { runGlobalReview, type GlobalReviewDependencies } from "../agents/global-review.js";
 import { parseChapterPlan } from "../contracts/chapter.js";
 import { buildContinuityContext } from "../state/continuity.js";
@@ -40,7 +47,8 @@ export type ServiceStatus =
 export interface GraphNovelAgentDependencies
   extends FoundationAgentDependencies,
     ChapterPlanningDependencies,
-    ChapterWritingDependencies {}
+    ChapterWritingDependencies,
+    CreativeProjectDraftDependencies {}
 
 export interface CreateProjectInput {
   projectId?: string;
@@ -208,7 +216,7 @@ export class GraphNovelService {
     if (await this.checkpoints.load(projectId)) {
       throw new ServiceError(409, "exists", "项目 ID 已存在");
     }
-    const targetTotalChapters = boundedInteger(input.targetTotalChapters ?? 12, 1, 200, "targetTotalChapters");
+    const targetTotalChapters = boundedInteger(input.targetTotalChapters ?? 12, 1, Number.MAX_SAFE_INTEGER, "targetTotalChapters");
     const targetTotalWords = boundedInteger(input.targetTotalWords ?? 0, 0, 20_000_000, "targetTotalWords");
     const state = createInitialState(projectId, title);
     state.creativeGenre = optionalText(input.creativeGenre);
@@ -375,6 +383,18 @@ export class GraphNovelService {
 
   async chatCreatively(input: CreativeChatInput): Promise<{ reply: string; sessionId: string }> {
     return this.runChat(input);
+  }
+
+  async draftProjectFromCreativeChat(input: CreativeProjectDraftInput): Promise<{ draft: CreativeProjectDraft; sessionId: string }> {
+    const dependencies = this.requireAgents();
+    try {
+      return await runCreativeProjectDraft(input, dependencies);
+    } catch (error) {
+      if (error instanceof CreativeProjectDraftContractError) {
+        throw new ServiceError(502, "invalid_agent_output", error.message);
+      }
+      throw error;
+    }
   }
 
   exportState(state: GraphNovelState): string {

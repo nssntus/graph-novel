@@ -3,6 +3,7 @@ import { ChatPanel } from "./components/chat/chat-panel";
 import { ProjectLibrary } from "./pages/project-library";
 import { ProjectWorkspace } from "./pages/project-workspace";
 import { ReaderPage } from "./app";
+import type { CreativeProjectDraft } from "./lib/api";
 
 type LocationState = { path: string; projectId: string | null; route: string };
 function locationState(): LocationState {
@@ -11,10 +12,10 @@ function locationState(): LocationState {
 }
 
 export function AppRoot() {
-  const [location, setLocation] = useState(locationState); const [chatOpen, setChatOpen] = useState(false);
+  const [location, setLocation] = useState(locationState); const [chatOpen, setChatOpen] = useState(false); const [projectDraft, setProjectDraft] = useState<CreativeProjectDraft | null>(null);
   useEffect(() => { const onPop = () => setLocation(locationState()); window.addEventListener("popstate", onPop); return () => window.removeEventListener("popstate", onPop); }, []);
   useEffect(() => { const onClick = (event: MouseEvent) => { const target = event.target as HTMLElement; const link = target.closest("a"); if (!link || !link.href || new URL(link.href).origin !== window.location.origin || link.target === "_blank" || link.hasAttribute("download") || link.getAttribute("href")?.startsWith("/api/")) return; event.preventDefault(); window.history.pushState({}, "", link.href); setLocation(locationState()); }; document.addEventListener("click", onClick); return () => document.removeEventListener("click", onClick); }, []);
   if (location.path === "/reader") return <ReaderPage />;
   if (location.projectId) return <ProjectWorkspace projectId={location.projectId} initialRoute={location.route} onChat={(open) => setChatOpen(open)} />;
-  return <><ProjectLibrary onChat={() => setChatOpen(true)} />{chatOpen && <ChatPanel onClose={() => setChatOpen(false)} />}</>;
+  return <><ProjectLibrary onChat={() => setChatOpen(true)} initialDraft={projectDraft} onDraftConsumed={() => setProjectDraft(null)} />{chatOpen && <ChatPanel onClose={() => setChatOpen(false)} onProjectDraft={(draft) => { setProjectDraft(draft); setChatOpen(false); }} />}</>;
 }

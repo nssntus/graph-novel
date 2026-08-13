@@ -4,6 +4,7 @@ import type {
   CreativeCharter,
   FoundationReview,
   FoundationRewriteTarget,
+  ChapterOutline,
   NarrativePlan,
   NovelOutline,
   RelationshipMap,
@@ -21,6 +22,24 @@ export class OutputContractError extends Error {
     this.path = path;
   }
 }
+
+export interface StoryArchitectureIntent {
+  centralConflict: string;
+  stakes: string;
+  endingDirection: string;
+  storyArcs: Array<{
+    arcId?: string;
+    name: string;
+    objective: string;
+    opposition: string;
+    turningPoint: string;
+    outcome: string;
+    weight: number;
+  }>;
+}
+
+const MAX_FIELD_CHARS = 800;
+const MAX_COLLECTION_ITEMS = 128;
 
 export function parseCreativeCharter(text: string): CreativeCharter {
   const value = recordFromJson(text, "creative_charter");
@@ -49,14 +68,14 @@ export function parseWorldSetting(text: string): WorldSetting {
   const powerSystem = requiredRecord(value.powerSystem, "world_setting.powerSystem");
   return {
     ...base,
-    keyLocations: requiredRecordArray(value.keyLocations, "world_setting.keyLocations", true).map((item, index) => ({
+    keyLocations: requiredRecordArray(value.keyLocations, "world_setting.keyLocations", true, 24).map((item, index) => ({
       locationId: requiredId(item.locationId, `world_setting.keyLocations[${index}].locationId`),
       name: requiredString(item.name, `world_setting.keyLocations[${index}].name`),
       roleInStory: requiredString(item.roleInStory, `world_setting.keyLocations[${index}].roleInStory`),
       distinguishingFeatures: requiredString(item.distinguishingFeatures, `world_setting.keyLocations[${index}].distinguishingFeatures`),
       accessConstraints: requiredString(item.accessConstraints, `world_setting.keyLocations[${index}].accessConstraints`),
     })),
-    factions: requiredRecordArray(value.factions, "world_setting.factions", true).map((item, index) => ({
+    factions: requiredRecordArray(value.factions, "world_setting.factions", true, 16).map((item, index) => ({
       factionId: requiredId(item.factionId, `world_setting.factions[${index}].factionId`),
       name: requiredString(item.name, `world_setting.factions[${index}].name`),
       goal: requiredString(item.goal, `world_setting.factions[${index}].goal`),
@@ -71,7 +90,7 @@ export function parseWorldSetting(text: string): WorldSetting {
       costs: requiredString(powerSystem.costs, "world_setting.powerSystem.costs"),
       progression: requiredString(powerSystem.progression, "world_setting.powerSystem.progression"),
     },
-    rules: requiredRecordArray(value.rules, "world_setting.rules", true).map((item, index) => ({
+    rules: requiredRecordArray(value.rules, "world_setting.rules", true, 32).map((item, index) => ({
       ruleId: requiredId(item.ruleId, `world_setting.rules[${index}].ruleId`),
       statement: requiredString(item.statement, `world_setting.rules[${index}].statement`),
       consequence: requiredString(item.consequence, `world_setting.rules[${index}].consequence`),
@@ -84,6 +103,7 @@ export function parseCharacters(text: string): Character[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new OutputContractError("characters", "必须是非空数组");
   }
+  if (value.length > 24) throw new OutputContractError("characters", "核心角色最多包含 24 人");
   const characters = value.map((item, index) => {
     const path = `characters[${index}]`;
     assertRecord(item, path);
@@ -96,13 +116,13 @@ export function parseCharacters(text: string): Character[] {
       motivation: requiredString(item.motivation, `${path}.motivation`),
       arcDescription: requiredString(item.arcDescription, `${path}.arcDescription`),
       fear: requiredString(item.fear, `${path}.fear`),
-      secrets: requiredRecordArray(item.secrets, `${path}.secrets`).map((secret, secretIndex) => ({
+      secrets: requiredRecordArray(item.secrets, `${path}.secrets`, false, 8).map((secret, secretIndex) => ({
         secretId: requiredId(secret.secretId, `${path}.secrets[${secretIndex}].secretId`),
         content: requiredString(secret.content, `${path}.secrets[${secretIndex}].content`),
       })),
-      strengths: requiredStringArray(item.strengths, `${path}.strengths`, true),
-      weaknesses: requiredStringArray(item.weaknesses, `${path}.weaknesses`, true),
-      abilities: requiredStringArray(item.abilities, `${path}.abilities`, true),
+      strengths: requiredStringArray(item.strengths, `${path}.strengths`, true, 12),
+      weaknesses: requiredStringArray(item.weaknesses, `${path}.weaknesses`, true, 12),
+      abilities: requiredStringArray(item.abilities, `${path}.abilities`, true, 12),
       voice: requiredString(item.voice, `${path}.voice`),
       firstAppearance: requiredString(item.firstAppearance, `${path}.firstAppearance`),
     };
@@ -116,7 +136,7 @@ export function parseCharacters(text: string): Character[] {
 export function parseRelationshipMap(text: string): RelationshipMap {
   const value = recordFromJson(text, "relationship_map");
   return {
-    relationships: requiredRecordArray(value.relationships, "relationship_map.relationships").map((item, index) => {
+    relationships: requiredRecordArray(value.relationships, "relationship_map.relationships", false, 96).map((item, index) => {
       const path = `relationship_map.relationships[${index}]`;
       return {
         fromCharacterId: requiredId(item.fromCharacterId, `${path}.fromCharacterId`),
@@ -127,12 +147,12 @@ export function parseRelationshipMap(text: string): RelationshipMap {
         hiddenInformation: requiredString(item.hiddenInformation, `${path}.hiddenInformation`),
       };
     }),
-    secrets: requiredRecordArray(value.secrets, "relationship_map.secrets").map((item, index) => {
+    secrets: requiredRecordArray(value.secrets, "relationship_map.secrets", false, 96).map((item, index) => {
       const path = `relationship_map.secrets[${index}]`;
       return {
         secretId: requiredId(item.secretId, `${path}.secretId`),
-        holders: requiredIdArray(item.holders, `${path}.holders`, true),
-        affectedCharacters: requiredIdArray(item.affectedCharacters, `${path}.affectedCharacters`, true),
+        holders: requiredIdArray(item.holders, `${path}.holders`, true, 24),
+        affectedCharacters: requiredIdArray(item.affectedCharacters, `${path}.affectedCharacters`, true, 24),
         plannedReveal: requiredString(item.plannedReveal, `${path}.plannedReveal`),
         plannedRevealChapter: requiredPositiveInteger(item.plannedRevealChapter, `${path}.plannedRevealChapter`),
       };
@@ -140,13 +160,13 @@ export function parseRelationshipMap(text: string): RelationshipMap {
   };
 }
 
-export function parseStoryArchitecture(text: string): StoryArchitecture {
+export function parseStoryArchitecture(text: string, expectedTotalChapters?: number): StoryArchitecture {
   const value = recordFromJson(text, "story_architecture");
-  return {
+  const architecture = {
     centralConflict: requiredString(value.centralConflict, "story_architecture.centralConflict"),
     stakes: requiredString(value.stakes, "story_architecture.stakes"),
     endingDirection: requiredString(value.endingDirection, "story_architecture.endingDirection"),
-    storyArcs: requiredRecordArray(value.storyArcs, "story_architecture.storyArcs", true).map((item, index) => {
+    storyArcs: requiredRecordArray(value.storyArcs, "story_architecture.storyArcs", true, 12).map((item, index) => {
       const path = `story_architecture.storyArcs[${index}]`;
       return {
         arcId: requiredId(item.arcId, `${path}.arcId`),
@@ -158,21 +178,62 @@ export function parseStoryArchitecture(text: string): StoryArchitecture {
         outcome: requiredString(item.outcome, `${path}.outcome`),
       };
     }),
-    characterArcMilestones: requiredRecordArray(value.characterArcMilestones, "story_architecture.characterArcMilestones", true).map((item, index) => {
+    characterArcMilestones: requiredRecordArray(value.characterArcMilestones, "story_architecture.characterArcMilestones", true, 24).map((item, index) => {
       const path = `story_architecture.characterArcMilestones[${index}]`;
       return {
         characterId: requiredId(item.characterId, `${path}.characterId`),
         startingState: requiredString(item.startingState, `${path}.startingState`),
-        milestones: requiredStringArray(item.milestones, `${path}.milestones`, true),
+        milestones: requiredStringArray(item.milestones, `${path}.milestones`, true, 8),
         endingState: requiredString(item.endingState, `${path}.endingState`),
+      };
+    }),
+  };
+  if (architecture.storyArcs.length > 12) {
+    throw new OutputContractError("story_architecture.storyArcs", "长篇路线图最多包含 12 个故事阶段");
+  }
+  if (expectedTotalChapters !== undefined) {
+    let expectedStart = 1;
+    architecture.storyArcs.forEach((arc, index) => {
+      const range = requiredChapterRange(arc.chapterRange, `story_architecture.storyArcs[${index}].chapterRange`);
+      if (range.start !== expectedStart) {
+        throw new OutputContractError(`story_architecture.storyArcs[${index}].chapterRange`, `阶段必须连续，期望从第 ${expectedStart} 章开始`);
+      }
+      if (range.end > expectedTotalChapters) {
+        throw new OutputContractError(`story_architecture.storyArcs[${index}].chapterRange`, `结束章节不能超过 ${expectedTotalChapters}`);
+      }
+      expectedStart = range.end + 1;
+    });
+    if (expectedStart !== expectedTotalChapters + 1) {
+      throw new OutputContractError("story_architecture.storyArcs", `故事阶段必须完整覆盖 1-${expectedTotalChapters} 章`);
+    }
+  }
+  return architecture;
+}
+
+export function parseStoryArchitectureIntent(text: string): StoryArchitectureIntent {
+  const value = recordFromJson(text, "story_architecture_intent");
+  return {
+    centralConflict: requiredString(value.centralConflict, "story_architecture_intent.centralConflict", 400),
+    stakes: requiredString(value.stakes, "story_architecture_intent.stakes", 400),
+    endingDirection: requiredString(value.endingDirection, "story_architecture_intent.endingDirection", 400),
+    storyArcs: requiredRecordArray(value.storyArcs, "story_architecture_intent.storyArcs", true, 8).map((item, index) => {
+      const path = `story_architecture_intent.storyArcs[${index}]`;
+      return {
+        arcId: typeof item.arcId === "string" ? requiredId(item.arcId, `${path}.arcId`) : undefined,
+        name: requiredString(item.name, `${path}.name`, 80),
+        objective: requiredString(item.objective, `${path}.objective`, 300),
+        opposition: requiredString(item.opposition, `${path}.opposition`, 300),
+        turningPoint: requiredString(item.turningPoint, `${path}.turningPoint`, 300),
+        outcome: requiredString(item.outcome, `${path}.outcome`, 300),
+        weight: item.weight === undefined ? 1 : boundedInteger(item.weight, 1, 5, `${path}.weight`),
       };
     }),
   };
 }
 
-export function parseNarrativePlan(text: string): NarrativePlan {
+export function parseNarrativePlan(text: string, expectedTotalChapters?: number): NarrativePlan {
   const value = recordFromJson(text, "narrative_plan");
-  return {
+  const plan = {
     pacingPrinciples: requiredStringArray(value.pacingPrinciples, "narrative_plan.pacingPrinciples", true),
     payoffSchedule: requiredRecordArray(value.payoffSchedule, "narrative_plan.payoffSchedule", true).map((item, index) => {
       const path = `narrative_plan.payoffSchedule[${index}]`;
@@ -206,6 +267,18 @@ export function parseNarrativePlan(text: string): NarrativePlan {
       };
     }),
   };
+  if (plan.payoffSchedule.length > 24) throw new OutputContractError("narrative_plan.payoffSchedule", "宏观兑现排期最多包含 24 项");
+  if (plan.foreshadowingPlan.length > 64) throw new OutputContractError("narrative_plan.foreshadowingPlan", "全书伏笔排期最多包含 64 项");
+  if (plan.revelationPlan.length > 64) throw new OutputContractError("narrative_plan.revelationPlan", "全书事实揭示排期最多包含 64 项");
+  if (expectedTotalChapters !== undefined) {
+    plan.payoffSchedule.forEach((item, index) => {
+      const range = requiredChapterRange(item.chapterRange, `narrative_plan.payoffSchedule[${index}].chapterRange`);
+      if (range.end > expectedTotalChapters) {
+        throw new OutputContractError(`narrative_plan.payoffSchedule[${index}].chapterRange`, `结束章节不能超过 ${expectedTotalChapters}`);
+      }
+    });
+  }
+  return plan;
 }
 
 export function parseNovelOutline(text: string): NovelOutline {
@@ -231,7 +304,7 @@ export function parseStyleGuide(text: string): StyleGuide {
     pacing: requiredString(value.pacing, "style_guide.pacing"),
     chapterOpening: requiredString(value.chapterOpening, "style_guide.chapterOpening"),
     chapterEnding: requiredString(value.chapterEnding, "style_guide.chapterEnding"),
-    forbiddenPatterns: requiredStringArray(value.forbiddenPatterns, "style_guide.forbiddenPatterns", true),
+    forbiddenPatterns: requiredStringArray(value.forbiddenPatterns, "style_guide.forbiddenPatterns", true, 24),
   };
 }
 
@@ -242,7 +315,7 @@ export function parseContinuityBaseline(text: string): ContinuityBaseline {
     characterLocations: requiredStringRecord(value.characterLocations, "continuity_baseline.characterLocations"),
     characterConditions: requiredStringRecord(value.characterConditions, "continuity_baseline.characterConditions"),
     resources: requiredStringRecord(value.resources, "continuity_baseline.resources"),
-    initialFacts: requiredRecordArray(value.initialFacts, "continuity_baseline.initialFacts", true).map((item, index) => {
+    initialFacts: requiredRecordArray(value.initialFacts, "continuity_baseline.initialFacts", true, 128).map((item, index) => {
       const path = `continuity_baseline.initialFacts[${index}]`;
       return {
         factId: requiredId(item.factId, `${path}.factId`),
@@ -251,7 +324,7 @@ export function parseContinuityBaseline(text: string): ContinuityBaseline {
         visibility: requiredString(item.visibility, `${path}.visibility`),
       };
     }),
-    initialKnowledge: requiredRecordArray(value.initialKnowledge, "continuity_baseline.initialKnowledge").map((item, index) => {
+    initialKnowledge: requiredRecordArray(value.initialKnowledge, "continuity_baseline.initialKnowledge", false, 256).map((item, index) => {
       const path = `continuity_baseline.initialKnowledge[${index}]`;
       return {
         factId: requiredId(item.factId, `${path}.factId`),
@@ -268,7 +341,7 @@ export function parseContinuityBaseline(text: string): ContinuityBaseline {
 export function parseFoundationReview(text: string): FoundationReview {
   const value = recordFromJson(text, "foundation_review");
   const passed = requiredBoolean(value.passed, "foundation_review.passed");
-  const issues = requiredRecordArray(value.issues, "foundation_review.issues").map((item, index) => ({
+  const issues = requiredRecordArray(value.issues, "foundation_review.issues", false, 24).map((item, index) => ({
     target: rewriteTarget(item.target, `foundation_review.issues[${index}].target`),
     severity: requiredString(item.severity, `foundation_review.issues[${index}].severity`),
     message: requiredString(item.message, `foundation_review.issues[${index}].message`),
@@ -346,18 +419,33 @@ function requiredRecord(value: unknown, path: string): Record<string, unknown> {
   return value;
 }
 
-function requiredRecordArray(value: unknown, path: string, nonEmpty = false): Record<string, unknown>[] {
+function requiredRecordArray(value: unknown, path: string, nonEmpty = false, maximum = MAX_COLLECTION_ITEMS): Record<string, unknown>[] {
   if (!Array.isArray(value) || (nonEmpty && value.length === 0)) {
     throw new OutputContractError(path, nonEmpty ? "必须是非空数组" : "必须是数组");
   }
+  if (value.length > maximum) throw new OutputContractError(path, `最多包含 ${maximum} 项`);
   return value.map((item, index) => requiredRecord(item, `${path}[${index}]`));
 }
 
-function requiredString(value: unknown, path: string): string {
+function requiredString(value: unknown, path: string, maximum = MAX_FIELD_CHARS): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new OutputContractError(path, "必须是非空字符串");
   }
-  return value.trim();
+  const normalized = value.trim();
+  if (normalized.length > maximum) throw new OutputContractError(path, `最多包含 ${maximum} 个字符`);
+  return normalized;
+}
+
+function requiredChapterRange(value: unknown, path: string): { start: number; end: number } {
+  const text = requiredString(value, path);
+  const match = text.match(/^\s*(?:第\s*)?(\d+)\s*(?:-|–|—|至|到)\s*(\d+)\s*(?:章)?\s*$/);
+  if (!match) throw new OutputContractError(path, "必须使用明确的连续范围，例如 1-40");
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) {
+    throw new OutputContractError(path, "章节范围必须是正整数且结束章节不小于开始章节");
+  }
+  return { start, end };
 }
 
 function requiredId(value: unknown, path: string): string {
@@ -373,27 +461,31 @@ function optionalId(value: unknown, path: string): string {
   return requiredId(value, path);
 }
 
-function requiredIdArray(value: unknown, path: string, nonEmpty = false): string[] {
+function requiredIdArray(value: unknown, path: string, nonEmpty = false, maximum = 64): string[] {
   if (!Array.isArray(value) || (nonEmpty && value.length === 0)) {
     throw new OutputContractError(path, nonEmpty ? "必须是非空数组" : "必须是数组");
   }
+  if (value.length > maximum) throw new OutputContractError(path, `最多包含 ${maximum} 项`);
   return value.map((item, index) => requiredId(item, `${path}[${index}]`));
 }
 
-function requiredStringArray(value: unknown, path: string, nonEmpty = false): string[] {
+function requiredStringArray(value: unknown, path: string, nonEmpty = false, maximum = 32): string[] {
   if (!Array.isArray(value) || (nonEmpty && value.length === 0)) {
     throw new OutputContractError(path, nonEmpty ? "必须是非空数组" : "必须是数组");
   }
+  if (value.length > maximum) throw new OutputContractError(path, `最多包含 ${maximum} 项`);
   return value.map((item, index) => requiredString(item, `${path}[${index}]`));
 }
 
-function requiredPositiveIntegerArray(value: unknown, path: string): number[] {
+function requiredPositiveIntegerArray(value: unknown, path: string, maximum = 64): number[] {
   if (!Array.isArray(value)) throw new OutputContractError(path, "必须是数组");
+  if (value.length > maximum) throw new OutputContractError(path, `最多包含 ${maximum} 项`);
   return value.map((item, index) => requiredPositiveInteger(item, `${path}[${index}]`));
 }
 
 function requiredStringRecord(value: unknown, path: string): Record<string, string> {
   const record = requiredRecord(value, path);
+  if (Object.keys(record).length > 32) throw new OutputContractError(path, "最多包含 32 项");
   return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, requiredString(item, `${path}.${key}`)]));
 }
 
@@ -414,6 +506,13 @@ function boundedNumber(value: unknown, minimum: number, maximum: number, path: s
     throw new OutputContractError(path, `必须是 ${minimum}-${maximum} 之间的数字`);
   }
   return value;
+}
+
+function boundedInteger(value: unknown, minimum: number, maximum: number, path: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+    throw new OutputContractError(path, `必须是 ${minimum}-${maximum} 之间的整数`);
+  }
+  return value as number;
 }
 
 const FOUNDATION_REWRITE_TARGETS = new Set<FoundationRewriteTarget>([

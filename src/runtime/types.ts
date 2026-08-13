@@ -2,6 +2,7 @@ import type {
   AgentEvent,
   AgentMessage,
   StreamFn,
+  ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 
@@ -19,6 +20,9 @@ export interface AgentNodeRequest {
   prompt: string;
   model: Model<any>;
   streamFn: StreamFn;
+  maxOutputTokens?: number;
+  thinkingLevel?: ThinkingLevel;
+  jsonMode?: boolean;
   sessionId?: string;
 }
 

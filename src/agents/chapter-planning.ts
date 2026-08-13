@@ -67,7 +67,7 @@ export function createChapterPlanningEngine(
           context,
           dependencies,
           planningNode,
-          `你负责章节规划。只输出一个 JSON 对象，不要 Markdown 代码围栏、解释或额外文字。严格遵守以下完整输出契约：${JSON.stringify(CHAPTER_PLAN_CONTRACT)}。所有契约字段必须存在；除明确允许为空的数组和非 told 来源的 sourceCharacter 外，字符串均不得为空；禁止使用 null。chapterNumber、contextHash 和 foundationDirectiveHash 由引擎从输入注入，不要输出。若存在 chapterFoundationDirective，必须把它视为本章唯一有效的 Foundation 执行指令：逐项使用其中的角色、地点、势力、能力体系、世界规则、故事阶段、秘密/事实揭示、伏笔和文风要求。knowledgeByFact 列出开章前每项事实的已有知情者及认知等级；sourceType 为 told 时，sourceCharacter 必须来自对应 factId 的列表且认知等级不能低于接收者，否则应使用有证据支持的 observed、inferred、public 或 document。规划必须把前章结尾、首场景和因果链连接起来，不得让角色获得来源不可追溯的信息。`,
+          `你负责章节规划。只输出一个 JSON 对象，不要 Markdown 代码围栏、解释或额外文字。严格遵守以下完整输出契约：${JSON.stringify(CHAPTER_PLAN_CONTRACT)}。所有契约字段必须存在；除明确允许为空的数组和非 told 来源的 sourceCharacter 外，字符串均不得为空；禁止使用 null。chapterNumber、contextHash 和 foundationDirectiveHash 由引擎从输入注入，不要输出。若存在 chapterFoundationDirective，必须把它视为本章唯一有效的 Foundation 执行指令：逐项使用其中的角色、地点、势力、能力体系、世界规则、故事阶段、秘密/事实揭示、伏笔和文风要求。planningHorizon 是固定长度的近期路线图，只用于确保本章不会抢跑后续章节的转折、伏笔或揭示义务；不得提前兑现后续章节专属内容。knowledgeByFact 列出开章前每项事实的已有知情者及认知等级；sourceType 为 told 时，sourceCharacter 必须来自对应 factId 的列表且认知等级不能低于接收者，否则应使用有证据支持的 observed、inferred、public 或 document。规划必须把前章结尾、首场景和因果链连接起来，不得让角色获得来源不可追溯的信息。`,
           JSON.stringify({
             chapterNumber,
             continuityContext: planningContext,

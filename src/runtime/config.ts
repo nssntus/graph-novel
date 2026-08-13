@@ -18,6 +18,8 @@ export interface PiAgentConfig {
   model: string;
   timeoutMs: number;
   apiRetries: number;
+  maxOutputTokens: number;
+  maxTokensField?: "max_tokens" | "max_completion_tokens";
   thinkingLevel: ThinkingLevel;
 }
 
@@ -38,11 +40,18 @@ export function readPiAgentConfig(env: NodeJS.ProcessEnv = process.env): PiAgent
   if (effort !== "high" && effort !== "max") {
     throw new Error("DEEPSEEK_REASONING_EFFORT must be 'high' or 'max'");
   }
+  const rawMaxTokensField = text(env.DEEPSEEK_MAX_TOKENS_FIELD);
+  if (rawMaxTokensField && rawMaxTokensField !== "max_tokens" && rawMaxTokensField !== "max_completion_tokens") {
+    throw new Error("DEEPSEEK_MAX_TOKENS_FIELD must be 'max_tokens' or 'max_completion_tokens'");
+  }
+  const maxTokensField = (rawMaxTokensField || "max_tokens") as PiAgentConfig["maxTokensField"];
   return {
     baseUrl: (text(env.DEEPSEEK_BASE_URL) || "https://api.deepseek.com").replace(/\/+$/, ""),
     model: text(env.DEEPSEEK_MODEL) || "deepseek-v4-pro",
     timeoutMs: readFloatEnv(env, "DEEPSEEK_TIMEOUT_SECONDS", 120, 1, 600) * 1000,
     apiRetries: readIntEnv(env, "DEEPSEEK_API_RETRIES", 2, 0, 5),
+    maxOutputTokens: readIntEnv(env, "DEEPSEEK_MAX_OUTPUT_TOKENS", 8_192, 512, 65_536),
+    maxTokensField,
     thinkingLevel: thinking === "enabled" ? effort : "off",
   };
 }
@@ -61,7 +70,7 @@ export function createAgentDependenciesFromEnv(
       api: "openai-completions" as const,
       provider: "deepseek",
       baseUrl: config.baseUrl,
-      reasoning: config.thinkingLevel !== "off",
+      reasoning: true,
       input: ["text"] as ("text")[],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128_000,
@@ -69,7 +78,14 @@ export function createAgentDependenciesFromEnv(
       compat: { supportsDeveloperRole: false },
     }),
     baseUrl: config.baseUrl,
-    reasoning: config.thinkingLevel !== "off",
+    reasoning: true,
+    maxTokens: Math.min(catalogModel?.maxTokens ?? 16_384, config.maxOutputTokens),
+    compat: {
+      ...(catalogModel?.compat ?? {}),
+      supportsDeveloperRole: false,
+      maxTokensField: config.maxTokensField,
+      thinkingFormat: "deepseek",
+    },
   };
 
   const auth: ApiKeyAuth = {
