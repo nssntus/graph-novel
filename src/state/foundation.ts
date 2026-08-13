@@ -163,6 +163,7 @@ export interface ChapterOutline {
   summary: string;
   keyEvents: string[];
   foreshadowingToPlant: string[];
+  foreshadowingToReinforce?: string[];
   foreshadowingToPayOff: string[];
   povCharacter?: string;
   povCharacterId?: string;
@@ -182,12 +183,46 @@ export interface ChapterOutline {
   revealedFactIds?: string[];
 }
 
+export interface StoryRoadmapSegment {
+  segmentId: string;
+  chapterStart: number;
+  chapterEnd: number;
+  storyArcIds: string[];
+  name: string;
+  objective: string;
+  opposition: string;
+  turningPoint: string;
+  outcome: string;
+  payoffTargets: string[];
+}
+
 export interface NovelOutline {
   genre: string;
   premise: string;
   theme: string;
   targetLength: string;
+  planningMode?: "complete" | "rolling";
+  roadmapSegments?: StoryRoadmapSegment[];
   chapterOutlines: ChapterOutline[];
+}
+
+export interface FoundationOutlineChunk {
+  rangeStart: number;
+  rangeEnd: number;
+  chapterOutlines: ChapterOutline[];
+  continuityHandoff: string;
+  attempts: number;
+  outputHash: string;
+}
+
+export interface FoundationOutlineProgress {
+  status: "running" | "failed" | "completed";
+  totalChapters: number;
+  chunkSize: number;
+  nextChapter: number;
+  chunks: FoundationOutlineChunk[];
+  currentRange: { start: number; end: number } | null;
+  lastError: string | null;
 }
 
 export interface CharacterVoiceGuide {

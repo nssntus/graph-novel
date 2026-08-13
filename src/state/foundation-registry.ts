@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { FoundationRewriteTarget } from "./foundation.js";
 import type { GraphNovelState } from "./state.js";
+import { isRollingOutline, parseChapterRange } from "./rolling-outline.js";
 
 export type FoundationDocumentKey = FoundationRewriteTarget;
 export type FoundationDocumentStatus = "current" | "stale";
@@ -200,16 +201,44 @@ export function validateFoundationRegistry(state: GraphNovelState): FoundationVa
     });
   });
 
-  const chapters = state.novelOutline?.chapterOutlines ?? [];
-  if (chapters.length !== state.targetTotalChapters) issue(issues, "chapter_count", "outline_planning", "novelOutline.chapterOutlines", `期望 ${state.targetTotalChapters} 章，实际 ${chapters.length} 章`);
-  const secrets = new Map((state.relationshipMap?.secrets ?? []).map((item) => [item.secretId, item]));
   const facts = new Map((state.narrativePlan?.revelationPlan ?? []).map((item) => [item.factId, item]));
-  const establishedFacts = new Map(state.narrativeFacts.map((item) => [item.factId, item]));
-  const foreshadowings = new Map((state.narrativePlan?.foreshadowingPlan ?? []).map((item) => [item.id, item]));
-  const secretRevealChapters = new Map<string, number[]>();
-  const foreshadowingPlantChapters = new Map<string, number[]>();
-  const foreshadowingPayoffChapters = new Map<string, number[]>();
-  chapters.forEach((chapter, index) => {
+  if (isRollingOutline(state.novelOutline)) {
+    const segments = [...(state.novelOutline?.roadmapSegments ?? [])]
+      .sort((left, right) => left.chapterStart - right.chapterStart);
+    let expectedStart = 1;
+    if (segments.length === 0) {
+      issue(issues, "roadmap_empty", "story_architecture", "storyArchitecture.storyArcs", "长篇路线图至少需要一个故事阶段");
+    }
+    segments.forEach((segment, index) => {
+      const path = `novelOutline.roadmapSegments[${index}]`;
+      if (segment.chapterStart !== expectedStart) {
+        issue(issues, "roadmap_gap", "story_architecture", `${path}.chapterStart`, `故事阶段必须连续覆盖；期望从第 ${expectedStart} 章开始，实际从第 ${segment.chapterStart} 章开始`);
+      }
+      if (segment.chapterEnd < segment.chapterStart || segment.chapterEnd > state.targetTotalChapters) {
+        issue(issues, "roadmap_range", "story_architecture", `${path}.chapterEnd`, `故事阶段范围 ${segment.chapterStart}-${segment.chapterEnd} 无效或超出全书范围`);
+      }
+      segment.storyArcIds.forEach((id, child) => expect(id, "story_arc", "story_architecture", `${path}.storyArcIds[${child}]`));
+      expectedStart = segment.chapterEnd + 1;
+    });
+    if (segments.length > 0 && expectedStart !== state.targetTotalChapters + 1) {
+      issue(issues, "roadmap_coverage", "story_architecture", "novelOutline.roadmapSegments", `故事阶段只覆盖到第 ${expectedStart - 1} 章，目标为 ${state.targetTotalChapters} 章`);
+    }
+    state.narrativePlan?.payoffSchedule.forEach((item, index) => {
+      const range = parseChapterRange(item.chapterRange);
+      if (!range || range.end > state.targetTotalChapters) {
+        issue(issues, "payoff_range", "narrative_planning", `narrativePlan.payoffSchedule[${index}].chapterRange`, `兑现阶段范围 ${item.chapterRange} 无效或超出全书范围`);
+      }
+    });
+  } else {
+    const chapters = state.novelOutline?.chapterOutlines ?? [];
+    if (chapters.length !== state.targetTotalChapters) issue(issues, "chapter_count", "outline_planning", "novelOutline.chapterOutlines", `期望 ${state.targetTotalChapters} 章，实际 ${chapters.length} 章`);
+    const secrets = new Map((state.relationshipMap?.secrets ?? []).map((item) => [item.secretId, item]));
+    const establishedFacts = new Map(state.narrativeFacts.map((item) => [item.factId, item]));
+    const foreshadowings = new Map((state.narrativePlan?.foreshadowingPlan ?? []).map((item) => [item.id, item]));
+    const secretRevealChapters = new Map<string, number[]>();
+    const foreshadowingPlantChapters = new Map<string, number[]>();
+    const foreshadowingPayoffChapters = new Map<string, number[]>();
+    chapters.forEach((chapter, index) => {
     const path = `novelOutline.chapterOutlines[${index}]`;
     if (chapter.chapterNumber !== index + 1) issue(issues, "chapter_sequence", "outline_planning", `${path}.chapterNumber`, `期望 ${index + 1}，实际 ${chapter.chapterNumber}`);
     expect(chapter.povCharacterId, "character", "outline_planning", `${path}.povCharacterId`);
@@ -254,18 +283,19 @@ export function validateFoundationRegistry(state: GraphNovelState): FoundationVa
       const plan = foreshadowings.get(id);
       if (plan && plan.payoffChapter !== chapter.chapterNumber) issue(issues, "foreshadowing_payoff_mismatch", "outline_planning", `${path}.foreshadowingToPayOff[${child}]`, `${id} 计划在第 ${plan.payoffChapter} 章回收`);
     });
-  });
-  secrets.forEach((secret, id) => {
-    const revealChapters = secretRevealChapters.get(id) ?? [];
-    if (revealChapters.length === 0) issue(issues, "missing_secret_reveal", "outline_planning", "novelOutline.chapterOutlines", `${id} 的揭示计划没有落实到任何章节`);
-    if (revealChapters.length > 1) issue(issues, "duplicate_secret_reveal", "outline_planning", "novelOutline.chapterOutlines", `${id} 被多个章节重复标记为首次揭示`);
-  });
-  foreshadowings.forEach((plan, id) => {
-    const plantChapters = foreshadowingPlantChapters.get(id) ?? [];
-    const payoffChapters = foreshadowingPayoffChapters.get(id) ?? [];
-    if (plantChapters.length !== 1 || plantChapters[0] !== plan.plantChapter) issue(issues, "foreshadowing_plant_missing", "outline_planning", "novelOutline.chapterOutlines", `${id} 必须且只能在第 ${plan.plantChapter} 章埋设一次`);
-    if (payoffChapters.length !== 1 || payoffChapters[0] !== plan.payoffChapter) issue(issues, "foreshadowing_payoff_missing", "outline_planning", "novelOutline.chapterOutlines", `${id} 必须且只能在第 ${plan.payoffChapter} 章回收一次`);
-  });
+    });
+    secrets.forEach((secret, id) => {
+      const revealChapters = secretRevealChapters.get(id) ?? [];
+      if (revealChapters.length === 0) issue(issues, "missing_secret_reveal", "outline_planning", "novelOutline.chapterOutlines", `${id} 的揭示计划没有落实到任何章节`);
+      if (revealChapters.length > 1) issue(issues, "duplicate_secret_reveal", "outline_planning", "novelOutline.chapterOutlines", `${id} 被多个章节重复标记为首次揭示`);
+    });
+    foreshadowings.forEach((plan, id) => {
+      const plantChapters = foreshadowingPlantChapters.get(id) ?? [];
+      const payoffChapters = foreshadowingPayoffChapters.get(id) ?? [];
+      if (plantChapters.length !== 1 || plantChapters[0] !== plan.plantChapter) issue(issues, "foreshadowing_plant_missing", "outline_planning", "novelOutline.chapterOutlines", `${id} 必须且只能在第 ${plan.plantChapter} 章埋设一次`);
+      if (payoffChapters.length !== 1 || payoffChapters[0] !== plan.payoffChapter) issue(issues, "foreshadowing_payoff_missing", "outline_planning", "novelOutline.chapterOutlines", `${id} 必须且只能在第 ${plan.payoffChapter} 章回收一次`);
+    });
+  }
   const baseline = state.continuityBaseline;
   if (baseline) {
     Object.entries(baseline.characterLocations).forEach(([characterId, locationId]) => {

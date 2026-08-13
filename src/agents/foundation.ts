@@ -27,6 +27,7 @@ import type {
   NovelOutline,
   WorldSetting,
 } from "../state/foundation.js";
+import { buildRollingNovelOutline } from "../state/rolling-outline.js";
 import type { LegacyFoundationSource } from "../state/foundation-upgrade.js";
 import {
   createFoundationSnapshot,
@@ -97,29 +98,48 @@ const RELATIONSHIP_CONTRACT = {
 
 const ARCHITECTURE_CONTRACT = {
   centralConflict: "非空字符串", stakes: "非空字符串", endingDirection: "非空字符串",
-  storyArcs: [{ arcId: "稳定 ASCII ID", name: "非空字符串", chapterRange: "非空字符串", objective: "非空字符串", opposition: "非空字符串", turningPoint: "非空字符串", outcome: "非空字符串" }],
+  storyArcs: [{ arcId: "稳定 ASCII ID；全书共 1-12 个阶段", name: "非空字符串", chapterRange: "明确的连续章节范围，例如 1-40；所有阶段必须无缝覆盖全书", objective: "非空字符串", opposition: "非空字符串", turningPoint: "非空字符串", outcome: "非空字符串" }],
   characterArcMilestones: [{ characterId: "角色 ID", startingState: "非空字符串", milestones: ["非空字符串；至少一项"], endingState: "非空字符串" }],
 };
 
 const NARRATIVE_PLAN_CONTRACT = {
   pacingPrinciples: ["非空字符串；至少一项"],
-  payoffSchedule: [{ chapterRange: "非空字符串", type: "爽点、反转、情绪兑现等", setup: "前置铺垫", payoff: "兑现内容" }],
+  payoffSchedule: [{ chapterRange: "明确章节范围，例如 1-40；最多 24 项", type: "爽点、反转、情绪兑现等", setup: "前置铺垫", payoff: "兑现内容" }],
   foreshadowingPlan: [{ id: "稳定标识", description: "伏笔内容", plantChapter: "正整数", reinforceChapters: ["正整数，可为空"], payoffChapter: "正整数", payoff: "回收方式" }],
   revelationPlan: [{ factId: "稳定 ASCII ID", information: "信息内容", knownInitiallyBy: ["仅限故事开篇前已经知道完整事实的角色 ID；角色在某章才获知时禁止列入，可为空"], revealTo: ["后续获知角色 ID，至少一项"], earliestChapter: "正整数", method: "可追溯的获知方式" }],
 };
 
+const OUTLINE_CHAPTER_CONTRACT = {
+  chapterNumber: "正整数，必须与请求范围内的章节号完全连续",
+  title: "非空字符串",
+  summary: "非空字符串，说明本章可验证的剧情推进",
+  povCharacter: "角色名，仅用于阅读",
+  povCharacterId: "角色 ID",
+  involvedCharacterIds: ["在场或参与角色 ID，至少一项"],
+  locationIds: ["地点 ID，至少一项"],
+  factionIds: ["本章实际涉及的势力 ID，可为空"],
+  requiredSystemIds: ["本章实际使用或约束情节的能力体系 ID，可为空"],
+  requiredRuleIds: ["本章必须遵守的世界规则 ID，至少一项"],
+  storyArcIds: ["本章所属故事阶段 ID，至少一项"],
+  chapterGoal: "本章目标",
+  conflict: "本章主要冲突",
+  causalPrerequisites: ["必须在本章前已成立的条件，可为空；引用事实 ID 时只能使用输入中已登记且在本章前成立的 ID，未来条件必须写成具体自然语言，禁止虚构或使用占位 ID"],
+  keyEvents: ["非空字符串；至少一项；每项都是本章实际发生的关键事件，禁止省略、空数组或用占位符代替"],
+  turningPoint: "转折",
+  payoff: "本章兑现",
+  chapterHook: "章末钩子",
+  revealedSecretIds: ["本章揭示的秘密 ID，可为空"],
+  revealedFactIds: ["本章揭示的事实 ID，可为空"],
+  foreshadowingToPlant: ["伏笔 ID，可为空"],
+  foreshadowingToPayOff: ["伏笔 ID，可为空"],
+};
+
 const OUTLINE_CONTRACT = {
   genre: "非空字符串", premise: "非空字符串", theme: "非空字符串", targetLength: "非空字符串",
-  chapterOutlines: [{
-    chapterNumber: "正整数", title: "非空字符串", summary: "非空字符串",
-    povCharacter: "角色名，仅用于阅读", povCharacterId: "角色 ID", involvedCharacterIds: ["在场或参与角色 ID，至少一项"], locationIds: ["地点 ID，至少一项"], factionIds: ["本章实际涉及的势力 ID，可为空"], requiredSystemIds: ["本章实际使用或约束情节的能力体系 ID，可为空"], requiredRuleIds: ["本章必须遵守的世界规则 ID，至少一项"], storyArcIds: ["本章所属故事阶段 ID，至少一项"],
-    chapterGoal: "本章目标", conflict: "本章主要冲突",
-    causalPrerequisites: ["必须在本章前已成立的条件，可为空；引用事实 ID 时只能使用输入中已登记且在本章前成立的 ID，未来条件必须写成具体自然语言，禁止虚构或使用占位 ID"],
-    keyEvents: ["非空字符串；至少一项"], turningPoint: "转折", payoff: "本章兑现",
-    chapterHook: "章末钩子", revealedSecretIds: ["本章揭示的秘密 ID，可为空"], revealedFactIds: ["本章揭示的事实 ID，可为空"],
-    foreshadowingToPlant: ["伏笔 ID，可为空"], foreshadowingToPayOff: ["伏笔 ID，可为空"],
-  }],
+  chapterOutlines: [OUTLINE_CHAPTER_CONTRACT],
 };
+
+const OUTLINE_BATCH_THRESHOLD = 24;
 
 const STYLE_GUIDE_CONTRACT = {
   pointOfView: "非空字符串", tense: "非空字符串", tone: "非空字符串",
@@ -165,30 +185,25 @@ export function createFoundationEngine(
     contractedNode(RELATIONSHIP_NODE, "人物关系与秘密揭示调度师", RELATIONSHIP_CONTRACT, parseRelationshipMap, (state) => ({
       creativeCharter: state.creativeCharter, worldSetting: state.worldSetting, characters: state.characters,
     }), (state, value) => { state.relationshipMap = value; }, dependencies, options.upgradeSource),
-    contractedNode(ARCHITECTURE_NODE, "长篇故事架构师", ARCHITECTURE_CONTRACT, parseStoryArchitecture, (state) => ({
+    contractedNode(ARCHITECTURE_NODE, "长篇故事架构师", ARCHITECTURE_CONTRACT, (text, state) => parseStoryArchitecture(text, state.targetTotalChapters), (state) => ({
       creativeCharter: state.creativeCharter, worldSetting: state.worldSetting,
       characters: state.characters, relationshipMap: state.relationshipMap,
       targetTotalChapters: state.targetTotalChapters,
     }), (state, value) => { state.storyArchitecture = value; }, dependencies, options.upgradeSource),
-    contractedNode(NARRATIVE_NODE, "节奏、伏笔与信息流设计师", NARRATIVE_PLAN_CONTRACT, parseNarrativePlan, (state) => ({
+    contractedNode(NARRATIVE_NODE, "节奏、伏笔与信息流设计师", NARRATIVE_PLAN_CONTRACT, (text, state) => parseNarrativePlan(text, state.targetTotalChapters), (state) => ({
       creativeCharter: state.creativeCharter, characters: state.characters,
       relationshipMap: state.relationshipMap, storyArchitecture: state.storyArchitecture,
       targetTotalChapters: state.targetTotalChapters,
     }), (state, value) => { state.narrativePlan = value; }, dependencies, options.upgradeSource),
-    contractedNode(OUTLINE_NODE, "全书章节大纲规划师", OUTLINE_CONTRACT, parseFoundationOutline, (state) => ({
-      creativeCharter: state.creativeCharter, worldSetting: state.worldSetting,
-      characters: state.characters, relationshipMap: state.relationshipMap,
-      storyArchitecture: state.storyArchitecture, narrativePlan: state.narrativePlan,
-      targetTotalChapters: state.targetTotalChapters, targetTotalWords: state.targetTotalWords,
-    }), (state, value) => { state.novelOutline = value; }, dependencies, options.upgradeSource),
+    outlineNode(dependencies, options.upgradeSource),
     contractedNode(STYLE_NODE, "文风与叙事规范设计师", STYLE_GUIDE_CONTRACT, parseStyleGuide, (state) => ({
       creativeCharter: state.creativeCharter, characters: state.characters,
-      storyArchitecture: state.storyArchitecture, novelOutline: state.novelOutline,
+      storyArchitecture: state.storyArchitecture, outlineDigest: compactOutline(state.novelOutline),
     }), (state, value) => { state.styleGuide = value; }, dependencies, options.upgradeSource),
     contractedNode(BASELINE_NODE, "开篇连续性建档员", BASELINE_CONTRACT, parseContinuityBaseline, (state) => ({
       worldSetting: state.worldSetting, characters: state.characters,
       relationshipMap: state.relationshipMap, storyArchitecture: state.storyArchitecture,
-      narrativePlan: state.narrativePlan, novelOutline: state.novelOutline,
+      narrativePlan: state.narrativePlan, outlineDigest: compactOutline(state.novelOutline),
     }), (state, value) => { state.continuityBaseline = value; }, dependencies, options.upgradeSource),
     {
       key: VALIDATION_NODE,
@@ -210,9 +225,19 @@ export function createFoundationEngine(
           context,
           dependencies,
           REVIEW_NODE,
-          `你是 Foundation 一致性审查员，不负责补写设定。只输出一个 JSON 对象。检查题材承诺、世界规则、角色动机、角色秘密与关系揭示计划、故事阶段、信息揭示、逐章因果、文风和开篇基线是否互相一致，并确认大纲覆盖目标章数。秘密正文归 character_design，秘密持有者和计划揭示章节归 relationship_design，事实揭示时序及 knownInitiallyBy 归 narrative_planning，开篇认知记录归 continuity_baseline；knownInitiallyBy 只能包含故事开篇前已经知道完整事实的角色，如果错误的初始认知源自 knownInitiallyBy，issue.target 必须是 narrative_planning。issue.target 必须指向真正拥有待修改字段的节点。${options.upgradeSource ? "这是旧项目升级；还必须逐项对照 legacyUpgradeReference，任何与已批准章节、既有设定、事实账本或角色认知冲突的内容都不得通过。" : ""}严格使用契约：${JSON.stringify(REVIEW_CONTRACT)}。target 只能取：${FOUNDATION_REWRITE_ORDER.join(",")}。通过时 issues 与 rewriteTargets 必须为空；未通过时指出最早产生问题的节点。`,
+          `你是 Foundation 一致性审查员，不负责补写设定。只输出一个 JSON 对象。检查题材承诺、世界规则、角色动机、角色秘密与关系揭示计划、故事阶段、信息揭示、文风和开篇基线是否互相一致。planningMode 为 rolling 时，Foundation 只审批固定规模的全书路线图，逐章细节将在章节规划前结合最新 State 生成；不得因为不存在预生成的逐章细纲而报错，也不得要求补写全书逐章细纲。路线图由 story_architecture 和 narrative_planning 确定性派生，若其语义有问题，issue.target 必须指向这两个上游所有者之一，禁止把 outline_planning 作为 rolling 路线图的重写目标。秘密正文归 character_design，秘密持有者和计划揭示章节归 relationship_design，事实揭示时序及 knownInitiallyBy 归 narrative_planning，开篇认知记录归 continuity_baseline；knownInitiallyBy 只能包含故事开篇前已经知道完整事实的角色，如果错误的初始认知源自 knownInitiallyBy，issue.target 必须是 narrative_planning。issue.target 必须指向真正拥有待修改字段的节点。${options.upgradeSource ? "这是旧项目升级；还必须逐项对照 legacyUpgradeReference，任何与已批准章节、既有设定、事实账本或角色认知冲突的内容都不得通过。" : ""}严格使用契约：${JSON.stringify(REVIEW_CONTRACT)}。target 只能取：${FOUNDATION_REWRITE_ORDER.join(",")}。通过时 issues 与 rewriteTargets 必须为空；未通过时指出最早产生问题的节点。`,
           JSON.stringify(foundationReviewInput(context.state, options.upgradeSource)),
-          parseFoundationReview,
+          (text) => {
+            const review = parseFoundationReview(text);
+            if (context.state.novelOutline?.planningMode === "rolling"
+              && review.rewriteTargets.includes(OUTLINE_NODE)) {
+              throw new OutputContractError(
+                "foundation_review.rewriteTargets",
+                "rolling 路线图是确定性派生文档；请把问题指向 story_architecture 或 narrative_planning",
+              );
+            }
+            return review;
+          },
         );
         context.state.foundationReview = review;
         context.state.foundationReviewAttempts += 1;
@@ -264,11 +289,22 @@ export async function runFoundationGeneration(
   checkpoints: CheckpointStore,
   sink?: GraphEventSink,
 ): Promise<GraphRunResult> {
+  const upstreamReady = Boolean(
+    state.creativeCharter && state.worldSetting && state.characters.length
+      && state.relationshipMap && state.storyArchitecture && state.narrativePlan,
+  );
+  const resumeOutline = upstreamReady && (
+    ((state.foundationOutlineProgress?.status === "failed" || state.foundationOutlineProgress?.status === "running")
+      && state.foundationOutlineProgress.nextChapter <= state.targetTotalChapters)
+      || (!state.foundationOutlineProgress && !state.novelOutline && state.nodes[OUTLINE_NODE]?.status === "failed")
+  );
   state.foundationReview = null;
   state.foundationReviewAttempts = 0;
   state.foundationValidation = null;
   state.foundationSnapshot = null;
-  return createFoundationEngine(dependencies, checkpoints).run(state, CHARTER_NODE, sink);
+  state.foundationOutlineProgress = resumeOutline ? state.foundationOutlineProgress : null;
+  const startNode = resumeOutline ? OUTLINE_NODE : CHARTER_NODE;
+  return createFoundationEngine(dependencies, checkpoints).run(state, startNode, sink);
 }
 
 export function isLegacyFoundationProject(state: GraphNovelState): boolean {
@@ -435,6 +471,127 @@ function contractedNode<T>(
   };
 }
 
+function outlineNode(
+  dependencies: FoundationAgentDependencies,
+  upgradeSource?: LegacyFoundationSource,
+): GraphNode {
+  return {
+    key: OUTLINE_NODE,
+    async run(context) {
+      if (context.state.targetTotalChapters > OUTLINE_BATCH_THRESHOLD) {
+        const nodeInput = {
+          planningMode: "rolling",
+          targetTotalChapters: context.state.targetTotalChapters,
+          storyArchitecture: context.state.storyArchitecture,
+          narrativePlan: context.state.narrativePlan,
+        };
+        const value = buildRollingNovelOutline(context.state);
+        context.state.novelOutline = value;
+        context.state.foundationOutlineProgress = null;
+        recordFoundationDocument(context.state, OUTLINE_NODE, nodeInput, value);
+        return { status: "completed" };
+      }
+
+      const nodeInput = {
+        creativeCharter: context.state.creativeCharter,
+        worldSetting: context.state.worldSetting,
+        characters: context.state.characters,
+        relationshipMap: context.state.relationshipMap,
+        storyArchitecture: context.state.storyArchitecture,
+        narrativePlan: context.state.narrativePlan,
+        targetTotalChapters: context.state.targetTotalChapters,
+        targetTotalWords: context.state.targetTotalWords,
+        foundationRegistry: context.state.foundationRegistry,
+        revision: revisionContext(context.state, OUTLINE_NODE),
+        ...(upgradeSource ? { legacyUpgradeReference: legacyReferenceForNode(upgradeSource, OUTLINE_NODE) } : {}),
+        outputContract: OUTLINE_CONTRACT,
+      };
+      const value = await runContractedNode(
+        context,
+        dependencies,
+        OUTLINE_NODE,
+        outlineSystemPrompt(OUTLINE_CONTRACT, upgradeSource),
+        JSON.stringify(nodeInput),
+        (text) => {
+          const parsed = parseFoundationOutline(text, context.state);
+          if (!upgradeSource) return parsed;
+          const preserved = preserveLegacyUpgradeValue(OUTLINE_NODE, parsed, upgradeSource, context.state);
+          assertLegacyOutline(preserved as NovelOutline, upgradeSource.novelOutline);
+          return preserved;
+        },
+      );
+      context.state.novelOutline = value;
+      context.state.foundationOutlineProgress = null;
+      recordFoundationDocument(context.state, OUTLINE_NODE, nodeInput, value);
+      return { status: "completed" };
+    },
+  };
+}
+
+function outlineSystemPrompt(contract: unknown, upgradeSource?: LegacyFoundationSource): string {
+  return `你是全书章节大纲规划师。只输出 JSON，不要 Markdown、解释或额外文字。严格使用契约：${JSON.stringify(contract)}。所有章节必须遵守已确定的 Foundation 文档、角色 ID、地点 ID、规则 ID、伏笔和信息揭示计划。所有 *Id 字段只能逐字复制输入 foundationRegistry 中对应的 id，禁止根据名称推测、翻译、缩写或创造新 ID。章节大纲阶段禁止创建未登记的角色、地点、势力或规则；若确实需要新设定，必须返回失败并回到 Foundation 阶段处理。${upgradeSource ? "这是旧项目升级，不得改变已批准正文和既有章节关键事实。" : ""}`;
+}
+
+function compactOutline(outline: NovelOutline | null): unknown {
+  if (!outline) return null;
+  if (outline.planningMode === "rolling") {
+    return {
+      planningMode: outline.planningMode,
+      targetLength: outline.targetLength,
+      roadmapSegments: outline.roadmapSegments,
+    };
+  }
+  return {
+    genre: outline.genre,
+    premise: outline.premise,
+    theme: outline.theme,
+    targetLength: outline.targetLength,
+    chapterOutlines: outline.chapterOutlines.map((chapter) => ({
+      chapterNumber: chapter.chapterNumber,
+      title: chapter.title,
+      summary: chapter.summary,
+      chapterGoal: chapter.chapterGoal,
+      conflict: chapter.conflict,
+      chapterHook: chapter.chapterHook,
+      storyArcIds: chapter.storyArcIds,
+    })),
+  };
+}
+
+function reviewOutlineDigest(outline: NovelOutline | null): unknown {
+  if (!outline) return null;
+  if (outline.planningMode === "rolling") return compactOutline(outline);
+  return {
+    genre: outline.genre,
+    premise: outline.premise,
+    theme: outline.theme,
+    targetLength: outline.targetLength,
+    chapterOutlines: outline.chapterOutlines.map((chapter) => ({
+      chapterNumber: chapter.chapterNumber,
+      title: chapter.title,
+      summary: chapter.summary,
+      povCharacterId: chapter.povCharacterId,
+      involvedCharacterIds: chapter.involvedCharacterIds,
+      locationIds: chapter.locationIds,
+      factionIds: chapter.factionIds,
+      requiredSystemIds: chapter.requiredSystemIds,
+      requiredRuleIds: chapter.requiredRuleIds,
+      storyArcIds: chapter.storyArcIds,
+      chapterGoal: chapter.chapterGoal,
+      conflict: chapter.conflict,
+      causalPrerequisites: chapter.causalPrerequisites,
+      keyEvents: chapter.keyEvents,
+      turningPoint: chapter.turningPoint,
+      payoff: chapter.payoff,
+      chapterHook: chapter.chapterHook,
+      revealedSecretIds: chapter.revealedSecretIds,
+      revealedFactIds: chapter.revealedFactIds,
+      foreshadowingToPlant: chapter.foreshadowingToPlant,
+      foreshadowingToPayOff: chapter.foreshadowingToPayOff,
+    })),
+  };
+}
+
 function edge(from: string, to: string, reason: string) {
   return { from, to, reason, when: completed };
 }
@@ -473,7 +630,7 @@ function foundationReviewInput(state: GraphNovelState, upgradeSource?: LegacyFou
     relationshipMap: state.relationshipMap,
     storyArchitecture: state.storyArchitecture,
     narrativePlan: state.narrativePlan,
-    novelOutline: state.novelOutline,
+    outlineDigest: reviewOutlineDigest(state.novelOutline),
     styleGuide: state.styleGuide,
     continuityBaseline: state.continuityBaseline,
     foundationRegistry: state.foundationRegistry,

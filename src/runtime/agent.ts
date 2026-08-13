@@ -39,6 +39,12 @@ export class PiAgentRuntime {
     sink?: GraphEventSink,
   ): Promise<AgentNodeResult> {
     const sessionId = request.sessionId ?? randomUUID();
+    const streamFn = request.maxOutputTokens
+      ? ((model, context, options) => request.streamFn(model, context, {
+          ...options,
+          maxTokens: Math.min(request.maxOutputTokens!, model.maxTokens),
+        })) satisfies typeof request.streamFn
+      : request.streamFn;
     const agent = new Agent({
       initialState: {
         systemPrompt: request.systemPrompt,
@@ -46,7 +52,7 @@ export class PiAgentRuntime {
         thinkingLevel: this.options.thinkingLevel ?? "off",
       },
       sessionId,
-      streamFn: request.streamFn,
+      streamFn,
       thinkingBudgets: this.options.thinkingBudgets,
     });
 

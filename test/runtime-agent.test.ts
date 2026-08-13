@@ -94,6 +94,24 @@ test("runs a Pi Agent turn and maps lifecycle events", async () => {
   assert.ok(events.some((event) => event.type === "agent_event" && event.event.type === "agent_end"));
 });
 
+test("runtime forwards an explicit output budget to the provider stream", async () => {
+  let observedMaxTokens: number | undefined;
+  const runtime = new PiAgentRuntime();
+  await runtime.run({
+    nodeKey: "bounded_node",
+    attempt: 1,
+    systemPrompt: "You are a test agent.",
+    prompt: "Return the fixed result.",
+    model: createMockModel(),
+    streamFn: (_model, _context, options) => {
+      observedMaxTokens = options?.maxTokens;
+      return createMockStream("fixed result");
+    },
+    maxOutputTokens: 512,
+  });
+  assert.equal(observedMaxTokens, 512);
+});
+
 test("turn failures become observable node failures", async () => {
   const events: GraphEvent[] = [];
   const runtime = new PiAgentRuntime();

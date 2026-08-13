@@ -30,10 +30,10 @@ function model(): Model<"openai-responses"> {
   };
 }
 
-function response(text: string): AssistantMessage {
+function response(text: string, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
   return {
     role: "assistant", content: [{ type: "text", text }], api: "openai-responses",
-    provider: "openai", model: "mock", stopReason: "stop", timestamp: Date.now(),
+    provider: "openai", model: "mock", stopReason, timestamp: Date.now(),
     usage: {
       input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -159,6 +159,150 @@ test("Foundation retries one malformed model response with the contract error", 
   assert.equal(prompts.length, 11);
   assert.match(prompts[1]!, /creative_charter\.targetAudience/);
   assert.equal(state.worldSetting?.era, "近未来");
+});
+
+test("long Foundation creates a bounded rolling roadmap without an outline model request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-rolling-"));
+  const state = createInitialState("foundation-rolling", "Foundation Rolling Roadmap");
+  state.creativeGenre = "都市科幻";
+  state.creativePremise = "维修员追查海上城秘密";
+  state.creativeTheme = "真相与责任";
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  const responses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+  const prompts: string[] = [];
+  let index = 0;
+  const result = await runFoundationGeneration(
+    state,
+    {
+      runtime: new PiAgentRuntime(),
+      model: model(),
+      streamFn: (_model, request) => {
+        prompts.push(`${request.systemPrompt ?? ""}\n${JSON.stringify(request.messages ?? null)}`);
+        return streamFor(responses[index++]!);
+      },
+    },
+    new CheckpointStore(root),
+  );
+  assert.equal(result.status, "awaiting_approval", JSON.stringify(result.state.lastError));
+  assert.equal(index, 9);
+  assert.equal(state.novelOutline?.planningMode, "rolling");
+  assert.equal(state.novelOutline?.chapterOutlines.length, 0);
+  assert.deepEqual(state.novelOutline?.roadmapSegments?.map((item) => [item.chapterStart, item.chapterEnd]), [[1, 400]]);
+  assert.equal(state.foundationOutlineProgress, null);
+  assert.equal(state.foundationValidation?.passed, true);
+  assert.equal(prompts.some((prompt) => prompt.includes("novel_outline.chapterOutlines")), false);
+});
+
+test("Foundation model workload stays bounded when a long project grows to 5000 chapters", async () => {
+  const measurements: Array<{ calls: number; largestPrompt: number }> = [];
+  for (const totalChapters of [400, 5000]) {
+    const root = await mkdtemp(join(tmpdir(), `graphnovel-foundation-scale-${totalChapters}-`));
+    const state = createInitialState(`foundation-scale-${totalChapters}`, `Foundation Scale ${totalChapters}`);
+    state.creativeGenre = "都市科幻";
+    state.creativePremise = "维修员追查海上城秘密";
+    state.creativeTheme = "真相与责任";
+    state.targetTotalChapters = totalChapters;
+    const full = enhancedFoundationResponses({ totalChapters });
+    const responses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+    const promptSizes: number[] = [];
+    let index = 0;
+    const result = await runFoundationGeneration(
+      state,
+      {
+        runtime: new PiAgentRuntime(),
+        model: model(),
+        streamFn: (_model, request) => {
+          promptSizes.push((request.systemPrompt?.length ?? 0) + JSON.stringify(request.messages ?? null).length);
+          return streamFor(responses[index++]!);
+        },
+      },
+      new CheckpointStore(root),
+    );
+    assert.equal(result.status, "awaiting_approval", JSON.stringify(result.state.lastError));
+    assert.equal(state.novelOutline?.roadmapSegments?.length, 1);
+    measurements.push({ calls: index, largestPrompt: Math.max(...promptSizes) });
+  }
+  assert.deepEqual(measurements.map((item) => item.calls), [9, 9]);
+  assert.ok(Math.abs(measurements[1]!.largestPrompt - measurements[0]!.largestPrompt) < 256, JSON.stringify(measurements));
+});
+
+test("an old failed outline checkpoint resumes through the deterministic roadmap", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-rolling-resume-"));
+  const state = createInitialState("foundation-rolling-resume", "Foundation Rolling Resume");
+  state.creativeGenre = "都市科幻";
+  state.creativePremise = "维修员追查海上城秘密";
+  state.creativeTheme = "真相与责任";
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  const firstResponses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+  let firstIndex = 0;
+  const store = new CheckpointStore(root);
+  const first = await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(firstResponses[firstIndex++]!) },
+    store,
+  );
+  assert.equal(first.status, "awaiting_approval");
+  state.pendingGate = null;
+  state.workflowPhase = "failed";
+  state.novelOutline = null;
+  state.foundationOutlineProgress = {
+    status: "failed", totalChapters: 400, chunkSize: 1, nextChapter: 29,
+    currentRange: { start: 29, end: 29 }, chunks: [], lastError: "Pi Agent stopped with length",
+  };
+  state.nodes.outline_planning = { status: "failed", attempts: 4, error: "Pi Agent stopped with length" };
+  const responses = [full[7]!, full[8]!, full[9]!];
+  const prompts: string[] = [];
+  let index = 0;
+  const resumed = await runFoundationGeneration(
+    state,
+    {
+      runtime: new PiAgentRuntime(),
+      model: model(),
+      streamFn: (_model, request) => {
+        prompts.push(`${request.systemPrompt}\n${JSON.stringify(request.messages ?? null)}`);
+        return streamFor(responses[index++]!);
+      },
+    },
+    store,
+  );
+  assert.equal(resumed.status, "awaiting_approval", JSON.stringify(resumed.state.lastError));
+  assert.equal(index, 3);
+  assert.equal(resumed.state.novelOutline?.planningMode, "rolling");
+  assert.equal(resumed.state.foundationOutlineProgress, null);
+  assert.equal(prompts.some((prompt) => prompt.includes("chapterOutlines")), false);
+});
+
+test("rolling directives resolve chapter obligations without storing per-chapter outlines", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-rolling-directive-"));
+  const state = createInitialState("foundation-rolling-directive", "Foundation Rolling Directive");
+  state.creativeGenre = "都市科幻";
+  state.creativePremise = "维修员追查海上城秘密";
+  state.creativeTheme = "真相与责任";
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  const responses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+  let index = 0;
+  const result = await runFoundationGeneration(
+    state,
+    { runtime: new PiAgentRuntime(), model: model(), streamFn: () => streamFor(responses[index++]!) },
+    new CheckpointStore(root),
+  );
+  assert.equal(result.status, "awaiting_approval");
+  await decideFoundation(state, true, new CheckpointStore(root));
+  const opening = buildContinuityContext(state, 1).targetOutline;
+  const middle = buildContinuityContext(state, 200).targetOutline;
+  const ending = buildContinuityContext(state, 400).targetOutline;
+  assert.deepEqual(opening?.foreshadowingToPlant, ["old_badge"]);
+  assert.deepEqual(opening?.revealedFactIds, ["fact_signal_exists"]);
+  assert.deepEqual(middle?.storyArcIds, ["arc_anomaly_echo"]);
+  assert.notEqual(middle?.payoff, "揭露协议来源");
+  assert.deepEqual(middle?.involvedCharacterIds, ["char_lin_che"]);
+  assert.deepEqual(ending?.foreshadowingToPayOff, ["old_badge"]);
+  assert.equal(ending?.payoff, "揭露协议来源");
+  assert.deepEqual(ending?.revealedSecretIds, ["secret_father_card"]);
+  assert.equal(state.novelOutline?.chapterOutlines.length, 0);
 });
 
 test("Foundation approval is persisted and routes to chapter loop", async () => {
@@ -463,7 +607,7 @@ test("approving enhanced Foundation seeds the chapter continuity baseline", asyn
   assert.equal(state.foundationSnapshot?.version, 1);
   assert.equal(state.foundationSnapshot?.snapshotHash.length, 64);
   const context = buildContinuityContext(state, 1);
-  assert.equal(context.contextVersion, 3);
+  assert.equal(context.contextVersion, 4);
   assert.equal(context.foundationContext?.styleGuide.pointOfView, "第三人称限知，固定跟随林澈");
   assert.equal(context.targetOutline?.chapterGoal, "确认第1条线索");
   const directive = context.chapterFoundationDirective!;
@@ -502,6 +646,13 @@ test("approving enhanced Foundation seeds the chapter continuity baseline", asyn
   assert.equal(parsedGenerated.foundationDirectiveHash, directive.directiveHash);
   assert.equal(parsedGenerated.chapterNumber, 1);
   assert.equal(parsedGenerated.plannedFacts[0]?.statement, "旧港存在异常信号");
+  assert.deepEqual(parsedGenerated.foundationObligations, {
+    revealedSecretIds: [],
+    revealedFactIds: ["fact_signal_exists"],
+    foreshadowingToPlant: ["old_badge"],
+    foreshadowingToReinforce: [],
+    foreshadowingToPayOff: [],
+  });
   assert.throws(
     () => parseChapterPlan(JSON.stringify({ ...chapterPlan, foundationDirectiveHash: "wrong" }), 1, context),
     /foundationDirectiveHash.*必须匹配/,
@@ -639,4 +790,62 @@ test("legacy Foundation upgrade preserves approved canon and invalidates only fu
   assert.equal(state.foundationUpgrade?.source, null);
   assert.equal(state.foundationSnapshot?.snapshotHash.length, 64);
   assert.equal(buildContinuityContext(state, 2).chapterFoundationDirective?.sourceSnapshotHash, state.foundationSnapshot?.snapshotHash);
+});
+
+test("long legacy Foundation upgrade switches to a rolling roadmap without an outline model request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "graphnovel-foundation-upgrade-rolling-"));
+  const store = new CheckpointStore(root);
+  const state = createInitialState("legacy-upgrade-rolling", "Legacy Upgrade Rolling");
+  state.creativeGenre = "都市科幻";
+  state.creativePremise = "维修员追查海上城秘密";
+  state.creativeTheme = "真相与责任";
+  state.targetTotalChapters = 400;
+  const full = enhancedFoundationResponses({ totalChapters: 400 });
+  state.worldSetting = JSON.parse(full[1]!);
+  state.characters = JSON.parse(full[2]!);
+  state.novelOutline = JSON.parse(full[6]!);
+  state.foundationApproval = "approved";
+  state.workflowPhase = "awaiting_approval";
+  state.pendingGate = "chapter_plan:2";
+  state.pendingChapterNumber = 2;
+  state.approvedChapters = [{
+    chapterNumber: 1,
+    title: "潮汐回声",
+    summary: "林澈在旧港确认异常信号。",
+    polishedDraft: "旧港警报响起。林澈记录信号。",
+    endingExcerpt: "新的频段再次响起。",
+    lastScene: {
+      time: "第一日清晨", location: "旧港", povCharacter: "林澈",
+      charactersPresent: ["林澈"], finalAction: "保存信号", finalDialogue: "",
+    },
+    unresolvedActions: ["确认信号来源"],
+    openThreads: ["异常频段"],
+  }];
+  const approvedBefore = JSON.stringify(state.approvedChapters);
+  await store.save(state);
+  const backupFile = await store.backup(state, "pre-foundation-upgrade");
+  beginLegacyFoundationUpgrade(state, backupFile);
+
+  const responses = [...full.slice(0, 6), full[7]!, full[8]!, full[9]!];
+  const prompts: string[] = [];
+  let index = 0;
+  const result = await runFoundationUpgrade(
+    state,
+    {
+      runtime: new PiAgentRuntime(), model: model(),
+      streamFn: (_model, request) => {
+        prompts.push(`${request.systemPrompt ?? ""}\n${JSON.stringify(request.messages ?? null)}`);
+        return streamFor(responses[index++]!);
+      },
+    },
+    store,
+  );
+
+  assert.equal(result.status, "awaiting_approval", JSON.stringify(state.lastError));
+  assert.equal(index, 9);
+  assert.equal(state.novelOutline?.planningMode, "rolling");
+  assert.equal(state.novelOutline?.chapterOutlines.length, 0);
+  assert.deepEqual(state.novelOutline?.roadmapSegments?.map((item) => [item.chapterStart, item.chapterEnd]), [[1, 400]]);
+  assert.equal(prompts.some((prompt) => prompt.includes("novel_outline.chapterOutlines")), false);
+  assert.equal(JSON.stringify(state.approvedChapters), approvedBefore);
 });

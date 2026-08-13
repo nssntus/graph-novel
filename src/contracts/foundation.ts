@@ -4,6 +4,7 @@ import type {
   CreativeCharter,
   FoundationReview,
   FoundationRewriteTarget,
+  ChapterOutline,
   NarrativePlan,
   NovelOutline,
   RelationshipMap,
@@ -140,9 +141,9 @@ export function parseRelationshipMap(text: string): RelationshipMap {
   };
 }
 
-export function parseStoryArchitecture(text: string): StoryArchitecture {
+export function parseStoryArchitecture(text: string, expectedTotalChapters?: number): StoryArchitecture {
   const value = recordFromJson(text, "story_architecture");
-  return {
+  const architecture = {
     centralConflict: requiredString(value.centralConflict, "story_architecture.centralConflict"),
     stakes: requiredString(value.stakes, "story_architecture.stakes"),
     endingDirection: requiredString(value.endingDirection, "story_architecture.endingDirection"),
@@ -168,11 +169,31 @@ export function parseStoryArchitecture(text: string): StoryArchitecture {
       };
     }),
   };
+  if (architecture.storyArcs.length > 12) {
+    throw new OutputContractError("story_architecture.storyArcs", "长篇路线图最多包含 12 个故事阶段");
+  }
+  if (expectedTotalChapters !== undefined) {
+    let expectedStart = 1;
+    architecture.storyArcs.forEach((arc, index) => {
+      const range = requiredChapterRange(arc.chapterRange, `story_architecture.storyArcs[${index}].chapterRange`);
+      if (range.start !== expectedStart) {
+        throw new OutputContractError(`story_architecture.storyArcs[${index}].chapterRange`, `阶段必须连续，期望从第 ${expectedStart} 章开始`);
+      }
+      if (range.end > expectedTotalChapters) {
+        throw new OutputContractError(`story_architecture.storyArcs[${index}].chapterRange`, `结束章节不能超过 ${expectedTotalChapters}`);
+      }
+      expectedStart = range.end + 1;
+    });
+    if (expectedStart !== expectedTotalChapters + 1) {
+      throw new OutputContractError("story_architecture.storyArcs", `故事阶段必须完整覆盖 1-${expectedTotalChapters} 章`);
+    }
+  }
+  return architecture;
 }
 
-export function parseNarrativePlan(text: string): NarrativePlan {
+export function parseNarrativePlan(text: string, expectedTotalChapters?: number): NarrativePlan {
   const value = recordFromJson(text, "narrative_plan");
-  return {
+  const plan = {
     pacingPrinciples: requiredStringArray(value.pacingPrinciples, "narrative_plan.pacingPrinciples", true),
     payoffSchedule: requiredRecordArray(value.payoffSchedule, "narrative_plan.payoffSchedule", true).map((item, index) => {
       const path = `narrative_plan.payoffSchedule[${index}]`;
@@ -206,6 +227,18 @@ export function parseNarrativePlan(text: string): NarrativePlan {
       };
     }),
   };
+  if (plan.payoffSchedule.length > 24) throw new OutputContractError("narrative_plan.payoffSchedule", "宏观兑现排期最多包含 24 项");
+  if (plan.foreshadowingPlan.length > 64) throw new OutputContractError("narrative_plan.foreshadowingPlan", "全书伏笔排期最多包含 64 项");
+  if (plan.revelationPlan.length > 64) throw new OutputContractError("narrative_plan.revelationPlan", "全书事实揭示排期最多包含 64 项");
+  if (expectedTotalChapters !== undefined) {
+    plan.payoffSchedule.forEach((item, index) => {
+      const range = requiredChapterRange(item.chapterRange, `narrative_plan.payoffSchedule[${index}].chapterRange`);
+      if (range.end > expectedTotalChapters) {
+        throw new OutputContractError(`narrative_plan.payoffSchedule[${index}].chapterRange`, `结束章节不能超过 ${expectedTotalChapters}`);
+      }
+    });
+  }
+  return plan;
 }
 
 export function parseNovelOutline(text: string): NovelOutline {
@@ -358,6 +391,18 @@ function requiredString(value: unknown, path: string): string {
     throw new OutputContractError(path, "必须是非空字符串");
   }
   return value.trim();
+}
+
+function requiredChapterRange(value: unknown, path: string): { start: number; end: number } {
+  const text = requiredString(value, path);
+  const match = text.match(/^\s*(?:第\s*)?(\d+)\s*(?:-|–|—|至|到)\s*(\d+)\s*(?:章)?\s*$/);
+  if (!match) throw new OutputContractError(path, "必须使用明确的连续范围，例如 1-40");
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) {
+    throw new OutputContractError(path, "章节范围必须是正整数且结束章节不小于开始章节");
+  }
+  return { start, end };
 }
 
 function requiredId(value: unknown, path: string): string {

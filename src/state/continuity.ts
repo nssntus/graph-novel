@@ -16,8 +16,9 @@ import {
   type FoundationRegistry,
   type FoundationSnapshot,
 } from "./foundation-registry.js";
+import { buildRollingChapterOutline } from "./rolling-outline.js";
 
-export const CONTINUITY_CONTEXT_VERSION = 3;
+export const CONTINUITY_CONTEXT_VERSION = 4;
 
 export interface ChapterFoundationDirective {
   version: 1;
@@ -129,6 +130,21 @@ export interface ContinuityContextPackage {
   }>;
   continuity: ContinuityLedger;
   targetOutline: ChapterOutline | null;
+  planningHorizon: Array<{
+    chapterNumber: number;
+    title: string;
+    summary: string;
+    chapterGoal: string;
+    conflict: string;
+    turningPoint: string;
+    chapterHook: string;
+    storyArcIds: string[];
+    foreshadowingToPlant: string[];
+    foreshadowingToReinforce: string[];
+    foreshadowingToPayOff: string[];
+    revealedSecretIds: string[];
+    revealedFactIds: string[];
+  }>;
 }
 
 export function buildContinuityContext(
@@ -147,7 +163,7 @@ export function buildContinuityContext(
   const predecessor = approved.at(-1) ?? null;
   const outline = state.novelOutline?.chapterOutlines.find(
     (chapter) => chapter.chapterNumber === targetChapter,
-  );
+  ) ?? buildRollingChapterOutline(state, targetChapter) ?? undefined;
   const enhancedFoundation = state.foundationSnapshot && state.foundationRegistry
     && state.creativeCharter && state.relationshipMap
     && state.storyArchitecture && state.narrativePlan && state.styleGuide
@@ -166,6 +182,27 @@ export function buildContinuityContext(
   const chapterFoundationDirective = enhancedFoundation && outline
     ? buildChapterFoundationDirective(enhancedFoundation, outline, targetChapter, state.worldSetting!, state.characters)
     : null;
+  const planningHorizon = Array.from(
+    { length: Math.min(8, Math.max(0, state.targetTotalChapters - targetChapter + 1)) },
+    (_, index) => targetChapter + index,
+  ).map((chapterNumber) => state.novelOutline?.chapterOutlines.find((chapter) => chapter.chapterNumber === chapterNumber)
+      ?? buildRollingChapterOutline(state, chapterNumber))
+    .filter((chapter): chapter is ChapterOutline => Boolean(chapter))
+    .map((chapter) => ({
+      chapterNumber: chapter.chapterNumber,
+      title: chapter.title,
+      summary: chapter.summary,
+      chapterGoal: chapter.chapterGoal ?? "",
+      conflict: chapter.conflict ?? "",
+      turningPoint: chapter.turningPoint ?? "",
+      chapterHook: chapter.chapterHook ?? "",
+      storyArcIds: [...(chapter.storyArcIds ?? [])],
+      foreshadowingToPlant: [...chapter.foreshadowingToPlant],
+      foreshadowingToReinforce: [...(chapter.foreshadowingToReinforce ?? [])],
+      foreshadowingToPayOff: [...chapter.foreshadowingToPayOff],
+      revealedSecretIds: [...(chapter.revealedSecretIds ?? [])],
+      revealedFactIds: [...(chapter.revealedFactIds ?? [])],
+    }));
   const payload: Omit<ContinuityContextPackage, "contextHash"> = {
     contextVersion: enhancedFoundation ? CONTINUITY_CONTEXT_VERSION : 1,
     novelTitle: state.novelTitle,
@@ -197,6 +234,7 @@ export function buildContinuityContext(
       resources: { ...state.continuity.resources },
     },
     targetOutline: outline ? cloneChapterOutline(outline) : null,
+    planningHorizon,
   };
 
   return {
@@ -230,6 +268,7 @@ function buildChapterFoundationDirective(
   const factIds = unique(outline.revealedFactIds ?? []);
   const foreshadowingIds = unique([
     ...outline.foreshadowingToPlant,
+    ...(outline.foreshadowingToReinforce ?? []),
     ...outline.foreshadowingToPayOff,
   ]);
   const characterSet = new Set(characterIds);
@@ -280,6 +319,7 @@ function cloneChapterOutline(outline: ChapterOutline): ChapterOutline {
     ...outline,
     keyEvents: [...outline.keyEvents],
     foreshadowingToPlant: [...outline.foreshadowingToPlant],
+    foreshadowingToReinforce: [...(outline.foreshadowingToReinforce ?? [])],
     foreshadowingToPayOff: [...outline.foreshadowingToPayOff],
     causalPrerequisites: [...(outline.causalPrerequisites ?? [])],
     involvedCharacterIds: [...(outline.involvedCharacterIds ?? [])],

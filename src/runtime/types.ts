@@ -19,6 +19,7 @@ export interface AgentNodeRequest {
   prompt: string;
   model: Model<any>;
   streamFn: StreamFn;
+  maxOutputTokens?: number;
   sessionId?: string;
 }
 

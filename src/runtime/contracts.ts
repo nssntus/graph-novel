@@ -10,6 +10,7 @@ export interface ContractAgentDependencies {
 }
 
 export const MAX_CONTRACT_RETRIES = 1;
+export const MAX_STRUCTURED_OUTPUT_TOKENS = 8_192;
 
 export async function runContractedNode<T>(
   context: GraphNodeContext,
@@ -29,6 +30,7 @@ export async function runContractedNode<T>(
       prompt: validationFeedback ? `${prompt}\n\n${validationFeedback}` : prompt,
       model: dependencies.model,
       streamFn: dependencies.streamFn,
+      maxOutputTokens: MAX_STRUCTURED_OUTPUT_TOKENS,
     }, context.eventSink);
     try {
       return parse(result.text);
